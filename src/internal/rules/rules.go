@@ -121,6 +121,12 @@ var Defaults = []Rule{
 	{ID: "off-hours", Name: "時間外の通信", Finding: event.FindingTypeOffHours, Mode: ModeMonitor, Score: 20},
 	// 脅威情報（G7）。遮断の一覧は GW が止めるので、危険度による隔離は、一覧の質を確かめてから有効にする。
 	{ID: "threat-intel", Name: "脅威情報に当てはまる通信", Finding: event.FindingTypeThreatIntel, Mode: ModeMonitor, Score: 50},
+	// CLIENT の検知（2c-1）。管理者の作業やパッケージの更新でも当てはまるため、試験運用から始め、例外で平常の操作を除く。
+	{ID: "persistence", Name: "永続化の場所の変更", Finding: event.FindingTypePersistence, Mode: ModeMonitor, Score: 40},
+	{ID: "privilege-change", Name: "権限の設定の変更", Finding: event.FindingTypePrivilegeChange, Mode: ModeMonitor, Score: 40},
+	{ID: "privilege-escalation", Name: "権限昇格", Finding: event.FindingTypePrivilegeEscalation, Mode: ModeMonitor, Score: 20},
+	{ID: "credential-access", Name: "認証情報へのアクセス", Finding: event.FindingTypeCredentialAccess, Mode: ModeMonitor, Score: 50},
+	{ID: "kernel-module", Name: "カーネルモジュールの読み込み", Finding: event.FindingTypeKernelModule, Mode: ModeMonitor, Score: 30},
 }
 
 // Parse は検知ルールを読んで検証する。知らない項目は書き間違いとみなして拒否する。

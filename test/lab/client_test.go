@@ -15,8 +15,8 @@ import (
 	"time"
 )
 
-// TestClient は CLIENT の権限の分離と自己防御（C10）、監視（C1、C2、C3）、大量の変更による隔離、
-// おとりの削除の検知（C5）、証明書の更新（M1）を確かめる。
+// TestClient は CLIENT の権限の分離と自己防御（C10）、監視（C1、C2、C3）、永続化の場所の変更と認証情報の読み取りの検知（C4、C8）、
+// AI エージェントの帰属（C9）、大量の変更による隔離、おとりの削除の検知（C5）、証明書の更新（M1）を確かめる。
 func TestClient(t *testing.T) {
 	if *susanooBin == "" {
 		t.Fatal("-susanoo で susanoo の実行ファイルを指定してください")
@@ -28,11 +28,16 @@ func TestClient(t *testing.T) {
 	l.writeGW([]map[string]any{{"name": "default", "egress": map[string]any{"default": "allow"}, "isolation": "management"}}, nil)
 
 	watched := filepath.Join(l.dir, "watched")
+	persist := filepath.Join(l.dir, "systemd")
 	protected := filepath.Join(l.dir, "Documents")
-	for _, d := range []string{watched, protected} {
+	for _, d := range []string{watched, persist, protected} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
+	}
+	secret := filepath.Join(l.dir, "id_ed25519")
+	if err := os.WriteFile(secret, []byte("-----BEGIN OPENSSH PRIVATE KEY-----\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	decoy := filepath.Join(l.dir, "decoy", ".aws", "credentials")
 	keyDir := filepath.Join(l.dir, pc.id)
@@ -41,7 +46,11 @@ func TestClient(t *testing.T) {
 	l.susanoo("ctl", "issue", "-dir", l.ctrlDir, "-id", pc.id, "-pub", filepath.Join(keyDir, "client.pub"), "-out", keyDir, "-validity", "40s")
 	writeJSON(t, filepath.Join(l.dir, pc.id+".json"), map[string]any{
 		"controller": controllerAddr, "pki_dir": pc.id, "state_dir": pc.id + "-state", "heartbeat_interval": "1s",
-		"files":       map[string]any{"watch": []string{watched}, "protect": []string{protected}, "mass_files": 50, "mass_window": "10s"},
+		"files": map[string]any{
+			"watch": []string{watched}, "persistence": []string{persist}, "privilege": []string{},
+			"sensitive": []map[string]any{{"path": secret, "readers": []string{"ssh"}}},
+			"protect":   []string{protected}, "mass_files": 50, "mass_window": "10s",
+		},
 		"honeytokens": []map[string]any{{"path": decoy, "kind": "aws"}},
 	})
 
@@ -56,7 +65,8 @@ func TestClient(t *testing.T) {
 	agent := start(t, "CLIENT "+pc.id, pc.ns, nil, *susanooBin, "client", "-config", filepath.Join(l.dir, pc.id+".json"))
 	waitFor(t, "端末の登録と機能の申告", 15*time.Second, func() bool {
 		f := l.devices()[pc.id].Features
-		return slices.Contains(f, "process_events") && slices.Contains(f, "network_events") && slices.Contains(f, "file_events") && slices.Contains(f, "isolation")
+		return slices.Contains(f, "process_events") && slices.Contains(f, "network_events") && slices.Contains(f, "file_events") &&
+			slices.Contains(f, "kernel_modules") && slices.Contains(f, "isolation")
 	})
 
 	t.Log("段階1: CLIENT は権限を分けて動く。執行部は必要な capability だけを持ち、解析部は非特権の利用者で capability を持たない")
@@ -89,7 +99,34 @@ func TestClient(t *testing.T) {
 		return eventLine(l.events(), `"class_uid":1001`, fmt.Sprintf(`"path":"%s"`, target), `"name":"lab.test"`)
 	})
 
-	t.Log("段階5: 守る場所で短時間に大量のファイルを変更すると、端末が隔離される")
+	t.Log("段階5: 永続化の場所にサービスの定義を作ると、作ったプロセスと実行する命令の抜粋とともに検知結果になる")
+	unit := filepath.Join(persist, "updater.service")
+	if err := os.WriteFile(unit, []byte("[Service]\nExecStart=/usr/local/bin/updater --daemon\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "永続化の場所の変更の検知", 15*time.Second, func() bool {
+		return eventLine(l.events(), `"persistence"`, `"snippet":"ExecStart=/usr/local/bin/updater --daemon"`, `"name":"lab.test"`)
+	})
+
+	t.Log("段階6: 認証情報のファイルを、ふだん読むプログラム以外が読むと、読んだプロセスとともに検知結果になる")
+	if _, err := os.ReadFile(secret); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "認証情報の読み取りの検知", 15*time.Second, func() bool {
+		return eventLine(l.events(), `"credential_access"`, fmt.Sprintf(`"path":"%s"`, secret), `"name":"lab.test"`)
+	})
+
+	t.Log("段階7: AI エージェントの配下で起動したプロセスの記録には、エージェントの名前が付く")
+	// 名前を claude にした bash の子として /bin/sh を起動する。bash は -c に単純なコマンドが 1 つだけだと fork せずに exec するので、
+	// 「; :」を足して fork させ、claude の名前のプロセスを親として残す。
+	if out, err := inNS(pc.ns, "/bin/bash", "-c", `exec -a claude /bin/bash -c '/bin/sh -c "sleep 1; echo susanoo-agent-test"; :'`).CombinedOutput(); err != nil {
+		t.Fatalf("コマンドを実行できません: %v %s", err, out)
+	}
+	waitFor(t, "エージェントの帰属", 15*time.Second, func() bool {
+		return eventLine(l.events(), `"type_uid":100701`, "susanoo-agent-test", `"agent":{"name":"claude"`)
+	})
+
+	t.Log("段階8: 守る場所で短時間に大量のファイルを変更すると、端末が隔離される")
 	for i := range 60 {
 		if err := os.WriteFile(filepath.Join(protected, fmt.Sprintf("doc-%02d.encrypted", i)), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
@@ -100,7 +137,7 @@ func TestClient(t *testing.T) {
 		return d.Isolation == "management" && d.Reason == "短時間の大量変更" && d.Applied == "management"
 	})
 
-	t.Log("段階6: 隔離中に端末側の遮断のルールを消すと、入れ直され、改ざんが記録される")
+	t.Log("段階9: 隔離中に端末側の遮断のルールを消すと、入れ直され、改ざんが記録される")
 	sh(t, "ip", "netns", "exec", pc.ns, "nft", "delete", "table", "inet", "susanoo_client")
 	waitFor(t, "自己隔離のルールの入れ直し", 10*time.Second, func() bool {
 		return inNS(pc.ns, "nft", "list", "table", "inet", "susanoo_client").Run() == nil
@@ -109,7 +146,7 @@ func TestClient(t *testing.T) {
 		return eventLine(l.events(), `"tamper"`)
 	})
 
-	t.Log("段階7: おとりを消すと、消したプロセスとともに記録される")
+	t.Log("段階10: おとりを消すと、消したプロセスとともに記録される")
 	if err := os.Remove(decoy); err != nil { // すぐ終わるプロセスは名前を取れないことがあるので、試験のプロセスが消す
 		t.Fatal(err)
 	}
@@ -117,7 +154,7 @@ func TestClient(t *testing.T) {
 		return eventLine(l.events(), `"operation":"delete"`, `"name":"lab.test"`)
 	})
 
-	t.Log("段階8: 有効期間の短い証明書は、CLIENT が CONTROLLER に頼んで更新し、新しい証明書で通信を続ける")
+	t.Log("段階11: 有効期間の短い証明書は、CLIENT が CONTROLLER に頼んで更新し、新しい証明書で通信を続ける")
 	farFuture := time.Now().Add(80 * 24 * time.Hour)
 	waitFor(t, "証明書の更新", 40*time.Second, func() bool {
 		return l.devices()[pc.id].CertExpiry.After(farFuture)

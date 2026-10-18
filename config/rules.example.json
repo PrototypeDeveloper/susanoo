@@ -57,6 +57,19 @@
       "finding": "new_device",
       "mode": "monitor",
       "score": 10
+    },
+    {
+      "id": "agent-privilege",
+      "name": "AI エージェントによる権限の操作",
+      "description": "AI エージェントの配下のプロセスが sudo などで権限を得ようとした（プロンプトインジェクションで操られた疑い）",
+      "class": "process",
+      "mode": "monitor",
+      "score": 40,
+      "severity": 4,
+      "match": {"all": [
+        {"field": "unmapped.agent.name", "op": "exists"},
+        {"field": "process.name", "op": "in", "values": ["sudo", "su", "pkexec", "doas"]}
+      ]}
     }
   ],
   "exceptions": [
@@ -70,6 +83,11 @@
       "groups": ["server"],
       "match": {"field": "process.user.name", "op": "eq", "value": "deploy"},
       "reason": "サーバーの配備の手順で、deploy の利用者がインストーラーを取得して実行する"
+    },
+    {
+      "rules": ["persistence", "privilege-change"],
+      "match": {"field": "evidences.process.name", "op": "in", "values": ["dpkg", "apt-get", "snapd", "systemd"]},
+      "reason": "パッケージの更新では、サービスの定義や利用者の設定が書き換えられる"
     }
   ]
 }

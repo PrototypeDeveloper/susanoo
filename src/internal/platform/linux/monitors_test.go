@@ -101,7 +101,7 @@ func TestConnMonitor(t *testing.T) {
 	}
 	defer c.Close()
 
-	m, err := newConnMonitor(time.Second)
+	m, err := newConnMonitor(time.Second, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestFileMonitorImportantPaths(t *testing.T) {
 	watchedFile := filepath.Join(dir, "single", "authorized_keys")
 	os.MkdirAll(filepath.Dir(watchedFile), 0o700)
 	os.WriteFile(watchedFile, []byte("x"), 0o600)
-	m, err := newFileMonitor(FileConfig{Paths: []string{dir, watchedFile}}, quiet)
+	m, err := newFileMonitor(FileConfig{Paths: []string{dir, watchedFile}}, nil, nil, quiet)
 	if err != nil {
 		t.Skipf("FID 方式の fanotify を使えない: %v", err)
 	}
@@ -187,7 +187,7 @@ func TestFileMonitorImportantPaths(t *testing.T) {
 // fanotify が 1 件にまとめたイベントは、操作ごとに記録する。
 func TestMergedFileEvents(t *testing.T) {
 	dir := t.TempDir()
-	m, err := newFileMonitor(FileConfig{Paths: []string{dir}}, quiet)
+	m, err := newFileMonitor(FileConfig{Paths: []string{dir}}, nil, nil, quiet)
 	if err != nil {
 		t.Skipf("FID 方式の fanotify を使えない: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestMassChange(t *testing.T) {
 	dir := t.TempDir()
 	protected := filepath.Join(dir, "Documents")
 	os.Mkdir(protected, 0o700)
-	m, err := newFileMonitor(FileConfig{Paths: []string{dir}, Protect: []string{protected}, MassFiles: 5, MassWindow: time.Second}, quiet)
+	m, err := newFileMonitor(FileConfig{Paths: []string{dir}, Protect: []string{protected}, MassFiles: 5, MassWindow: time.Second}, nil, nil, quiet)
 	if err != nil {
 		t.Skipf("FID 方式の fanotify を使えない: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestMassChange(t *testing.T) {
 }
 
 func TestExecMonitorWhenPrivileged(t *testing.T) {
-	m, err := newExecMonitor(quiet)
+	m, err := newExecMonitor(newProcCache(), nil, quiet)
 	if err != nil {
 		t.Skipf("プロセスの監視には root 権限が必要: %v", err)
 	}
@@ -292,14 +292,21 @@ func TestExecMonitorWhenPrivileged(t *testing.T) {
 }
 
 func fidRecord(mask uint64, pid int32, handle []byte, name string) []byte {
+	return fidRecordOf(infoTypeDFIDName, mask, pid, handle, name)
+}
+
+// fidRecordOf は情報の種類 typ（DFID_NAME か FID）の fanotify のイベントを組み立てる。FID では name を付けない。
+func fidRecordOf(typ byte, mask uint64, pid int32, handle []byte, name string) []byte {
 	info := make([]byte, 4+8+8)
-	info[0] = infoTypeDFIDName
+	info[0] = typ
 	copy(info[4:12], []byte{1, 2, 3, 4, 5, 6, 7, 8})
 	binary.NativeEndian.PutUint32(info[12:16], uint32(len(handle)))
 	binary.NativeEndian.PutUint32(info[16:20], 1)
 	info = append(info, handle...)
-	info = append(info, name...)
-	info = append(info, 0)
+	if typ == infoTypeDFIDName {
+		info = append(info, name...)
+		info = append(info, 0)
+	}
 	for len(info)%4 != 0 {
 		info = append(info, 0)
 	}
@@ -327,6 +334,11 @@ func TestParseFIDEvents(t *testing.T) {
 	binary.NativeEndian.PutUint32(bad[24+12:], 1000) // ハンドルの長さが大きすぎる
 	if _, err := parseFIDEvents(bad); err == nil {
 		t.Error("不正なハンドルの長さを受け付けた")
+	}
+	// ファイルの印のイベント（FAN_REPORT_FID）は、ファイルそのものの識別子を持ち、名前はない。
+	evs, err = parseFIDEvents(fidRecordOf(infoTypeFID, fanOpen, 7, []byte{5, 5, 5, 5}, ""))
+	if err != nil || len(evs) != 1 || evs[0].file == "" || evs[0].dir != "" || evs[0].name != "" {
+		t.Errorf("FID のイベント = %+v, %v", evs, err)
 	}
 }
 

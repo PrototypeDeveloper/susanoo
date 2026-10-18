@@ -168,6 +168,8 @@ type Process struct {
 	User        *User    `json:"user,omitempty"`
 	Parent      *Process `json:"parent_process,omitempty"`
 	CreatedTime int64    `json:"created_time,omitempty"`
+	// Lineage は祖先のプロセスの実行ファイルのパス（古い順。親が最後）。親子関係の検知と、AI エージェントの帰属に使う（C8、C9）。
+	Lineage []string `json:"lineage,omitempty"`
 }
 
 // File はファイル。
@@ -278,6 +280,12 @@ const (
 	FindingTypeNewDestinations = "new_destinations" // 新しい宛先の急増（G6）
 	FindingTypeOffHours        = "off_hours"        // 時間外の通信（G6）
 	FindingTypeThreatIntel     = "threat_intel"     // 脅威情報の一覧に当てはまる問い合わせや通信（G7）
+	// CLIENT の検知（2c-1）。
+	FindingTypePersistence         = "persistence"          // 自動起動、cron、サービスなど、永続化に使われる場所の変更（C4）
+	FindingTypePrivilegeChange     = "privilege_change"     // 利用者、sudo、PAM など、権限の設定の変更（C4）
+	FindingTypePrivilegeEscalation = "privilege_escalation" // 一般の利用者のプロセスから root の権限のプロセスが起動した（C4）
+	FindingTypeCredentialAccess    = "credential_access"    // 認証情報のファイルを、ふだん読むプログラム以外が読んだ（C8、C9）
+	FindingTypeKernelModule        = "kernel_module"        // カーネルモジュールの読み込み（C4）
 )
 
 // HasType は検知の種類に t が含まれるかどうかを返す。

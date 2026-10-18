@@ -26,12 +26,28 @@
   "connection_monitor": true,
   "files": {
     "watch": [
-      "/etc/passwd",
-      "/etc/sudoers.d",
+      "/etc/hosts",
+      "/etc/ssl/certs",
+      "/home/user/.ssh"
+    ],
+    "persistence": [
       "/etc/cron.d",
       "/etc/systemd/system",
-      "/home/user/.ssh",
+      "/etc/systemd/system/*.wants",
+      "/home/user/.config/autostart",
       "/home/user/.bashrc"
+    ],
+    "privilege": [
+      "/etc/passwd",
+      "/etc/shadow",
+      "/etc/sudoers.d",
+      "/etc/pam.d"
+    ],
+    "sensitive": [
+      {"path": "/home/user/.ssh/id_*", "exclude": ["*.pub"], "readers": ["ssh", "ssh-add", "ssh-agent", "ssh-keygen", "scp", "sftp"]},
+      {"path": "/home/user/.aws/credentials", "readers": ["aws"]},
+      {"path": "/home/user/.mozilla/firefox/*/cookies.sqlite", "readers": ["firefox"]},
+      {"path": "/home/user/.mozilla/firefox/*/logins.json", "readers": ["firefox"]}
     ],
     "protect": [
       "/home/user/Documents",
@@ -40,6 +56,11 @@
     "mass_files": 200,
     "mass_window": "30s"
   },
+  "kernel_modules": true,
+  "agents": [
+    {"name": "claude", "match": ["claude", "@anthropic-ai/claude-code/"]},
+    {"name": "codex", "match": ["codex", "@openai/codex/"]}
+  ],
   "privilege_separation": true,
   "analyzer_user": "nobody"
 }

@@ -193,7 +193,9 @@ func TestGWAndClient(t *testing.T) {
 		// この試験はおとりから隔離までを確かめる。手元の PC のプロセスや接続の一覧、ホームのファイルは見ない。
 		"process_monitor":    false,
 		"connection_monitor": false,
-		"files":              map[string]any{"watch": []string{}, "protect": []string{}},
+		"kernel_modules":     false,
+		"files": map[string]any{"watch": []string{}, "persistence": []string{}, "privilege": []string{},
+			"sensitive": []map[string]any{}, "protect": []string{}},
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -156,19 +156,21 @@ type connMonitor struct {
 	self     int
 	loopback bool // 試験用。ループバックの通信も記録する
 	limiter  *limiter
+	procs    *procCache
+	agents   *agentMatcher
 	known    map[uint32]bool // 記録済みのソケット
 	recent   map[connKey]time.Time
 	owners   map[uint32]int
 }
 
-func newConnMonitor(interval time.Duration) (*connMonitor, error) {
+func newConnMonitor(interval time.Duration, procs *procCache, agents *agentMatcher) (*connMonitor, error) {
 	if _, err := dumpSockets(syscall.AF_INET, syscall.IPPROTO_TCP, 1<<tcpListen); err != nil {
 		return nil, fmt.Errorf("sock_diag: %w", err)
 	}
 	if interval <= 0 {
 		interval = DefaultConnPoll
 	}
-	return &connMonitor{interval: interval, self: os.Getpid(), limiter: newLimiter(50, 200),
+	return &connMonitor{interval: interval, self: os.Getpid(), limiter: newLimiter(50, 200), procs: procs, agents: agents,
 		known: map[uint32]bool{}, recent: map[connKey]time.Time{}, owners: map[uint32]int{}}, nil
 }
 
@@ -242,7 +244,7 @@ func (m *connMonitor) poll(now time.Time, emit func(*event.Event)) {
 			continue
 		}
 		m.recent[key] = now
-		emit(connEvent(s, pid, listening[s.local.Port()] && s.proto == syscall.IPPROTO_TCP, now))
+		emit(m.connEvent(s, pid, listening[s.local.Port()] && s.proto == syscall.IPPROTO_TCP, now))
 	}
 }
 
@@ -262,7 +264,8 @@ func (m *connMonitor) interesting(a netip.Addr) bool {
 	return m.loopback || !a.IsLoopback()
 }
 
-func connEvent(s sockInfo, pid int, inbound bool, now time.Time) *event.Event {
+// connEvent は接続のイベントを作る。発信元のプロセスが AI エージェントの配下なら、unmapped.agent を付ける（C9）。
+func (m *connMonitor) connEvent(s sockInfo, pid int, inbound bool, now time.Time) *event.Event {
 	e := event.New(event.ClassNetworkActivity, event.NetworkOpen, event.SeverityInformational, now)
 	e.SrcEndpoint = &event.Endpoint{IP: s.local.Addr().String(), Port: int(s.local.Port())}
 	e.DstEndpoint = &event.Endpoint{IP: s.peer.Addr().String(), Port: int(s.peer.Port())}
@@ -276,7 +279,9 @@ func connEvent(s sockInfo, pid int, inbound bool, now time.Time) *event.Event {
 	}
 	e.Connection = &event.Connection{ProtocolName: proto, DirectionID: direction}
 	if pid > 0 {
-		e.Actor = &event.Actor{Process: processInfo(pid)}
+		proc, anc := m.procs.inspect(pid)
+		e.Actor = &event.Actor{Process: proc}
+		m.agents.annotate(e, proc, anc)
 	} else {
 		e.Actor = &event.Actor{User: &event.User{UID: strconv.Itoa(int(s.uid))}}
 	}

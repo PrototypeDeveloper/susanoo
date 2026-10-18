@@ -38,7 +38,9 @@ type clientConfig struct {
 	Isolation         *bool             `json:"isolation"`            // false なら自己隔離しない。既定 true
 	ProcessMonitor    *bool             `json:"process_monitor"`      // プロセスの監視（C1）。既定 true
 	ConnectionMonitor *bool             `json:"connection_monitor"`   // 通信とプロセスの結び付け（C2）。既定 true
-	Files             *fileConfig       `json:"files"`                // ファイルの監視（C3）。省略すると既定の場所を監視する
+	Files             *fileConfig       `json:"files"`                // ファイルの監視（C3、C4、C8、C9）。省略すると既定の場所を監視する
+	KernelModules     *bool             `json:"kernel_modules"`       // カーネルモジュールの読み込みの検知（C4）。既定 true
+	Agents            []linux.AgentSpec `json:"agents"`               // 見分ける AI エージェント（C9）。省略すると既定の一覧、空（[]）なら見分けない
 	Separation        *bool             `json:"privilege_separation"` // 権限の分離（C10）。既定 true（root で動かすとき）
 	User              string            `json:"analyzer_user"`        // 解析部を動かす利用者。既定 nobody
 }
@@ -46,11 +48,43 @@ type clientConfig struct {
 // defaultAnalyzerUser は解析部を動かす既定の利用者。専用の利用者（susanoo など）を作って指定するのが望ましい。
 const defaultAnalyzerUser = "nobody"
 
+// fileConfig はファイルの監視の設定。各一覧は、省略すると既定の場所、空（[]）なら監視しない。
 type fileConfig struct {
-	Watch      []string        `json:"watch"`       // 重要な場所（ファイルかディレクトリ）
-	Protect    []string        `json:"protect"`     // 大量の変更を監視する場所（下の階層を含む）
-	MassFiles  int             `json:"mass_files"`  // 既定 200
-	MassWindow config.Duration `json:"mass_window"` // 既定 30s
+	Watch       []string              `json:"watch"`       // 重要な場所（ファイルかディレクトリ）。変更を記録する（C3）
+	Persistence []string              `json:"persistence"` // 永続化の場所（自動起動、cron、サービスなど）。変更を検知結果にする（C4）
+	Privilege   []string              `json:"privilege"`   // 権限の設定の場所（利用者、sudo、PAM など）。変更を検知結果にする（C4）
+	Sensitive   []linux.SensitiveSpec `json:"sensitive"`   // 認証情報のファイルと、ふだん読むプログラム。それ以外の読み取りを検知結果にする（C8、C9）
+	Protect     []string              `json:"protect"`     // 大量の変更を監視する場所（下の階層を含む）
+	MassFiles   int                   `json:"mass_files"`  // 既定 200
+	MassWindow  config.Duration       `json:"mass_window"` // 既定 30s
+}
+
+// fileSettings は設定ファイルの files を、省略した一覧に既定の場所を入れて、Platform の設定にする。
+func fileSettings(f *fileConfig) linux.FileConfig {
+	cfg := linux.FileConfig{
+		Paths: linux.DefaultWatchPaths(), Persistence: linux.DefaultPersistencePaths(), Privilege: linux.DefaultPrivilegePaths(),
+		Sensitive: linux.DefaultSensitive(), Protect: linux.DefaultProtectPaths(),
+	}
+	if f == nil {
+		return cfg
+	}
+	if f.Watch != nil {
+		cfg.Paths = f.Watch
+	}
+	if f.Persistence != nil {
+		cfg.Persistence = f.Persistence
+	}
+	if f.Privilege != nil {
+		cfg.Privilege = f.Privilege
+	}
+	if f.Sensitive != nil {
+		cfg.Sensitive = f.Sensitive
+	}
+	if f.Protect != nil {
+		cfg.Protect = f.Protect
+	}
+	cfg.MassFiles, cfg.MassWindow = f.MassFiles, f.MassWindow.Or(0)
+	return cfg
 }
 
 func runClient(ctx context.Context, args []string, stderr io.Writer) int {
@@ -100,11 +134,10 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 		Tokens:        tokens,
 		ProcessEvents: cfg.ProcessMonitor == nil || *cfg.ProcessMonitor,
 		NetworkEvents: cfg.ConnectionMonitor == nil || *cfg.ConnectionMonitor,
-		Files:         linux.FileConfig{Paths: linux.DefaultWatchPaths(), Protect: linux.DefaultProtectPaths()},
+		Files:         fileSettings(cfg.Files),
+		KernelModules: cfg.KernelModules == nil || *cfg.KernelModules,
+		Agents:        cfg.Agents,
 		Logger:        log,
-	}
-	if f := cfg.Files; f != nil {
-		pcfg.Files = linux.FileConfig{Paths: f.Watch, Protect: f.Protect, MassFiles: f.MassFiles, MassWindow: f.MassWindow.Or(0)}
 	}
 	if cfg.Isolation == nil || *cfg.Isolation {
 		pcfg.NFT = nft.Command{Path: cfg.NFT}

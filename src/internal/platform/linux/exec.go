@@ -25,9 +25,10 @@ import (
 // CAP_SYS_ADMIN が必要。
 
 const (
-	execInfoDelay = 30 * time.Millisecond // execve が新しいプロセスの情報に切り替わるのを待つ時間
-	exitPoll      = 2 * time.Second
-	maxTracked    = 10000
+	execInfoDelay    = 30 * time.Millisecond // execve が新しいプロセスの情報に切り替わるのを待つ時間
+	exitPoll         = 2 * time.Second
+	maxTracked       = 10000
+	escalationDedupe = 10 * time.Minute // 同じ元のプロセスからの権限昇格を、続けて検知結果にしない時間
 )
 
 // 監視しない（実行ファイルを置かない）ファイルシステム。
@@ -50,9 +51,12 @@ type execMonitor struct {
 	self    int
 	limiter *limiter
 	log     *slog.Logger
+	procs   *procCache
+	agents  *agentMatcher
 
-	mu      sync.Mutex
-	tracked map[int]tracked
+	mu          sync.Mutex
+	tracked     map[int]tracked
+	escalations map[int]time.Time // 権限昇格の元のプロセスの PID と、検知した時刻
 }
 
 // mountPoints は監視するファイルシステムのマウント位置を、デバイスごとに 1 つずつ返す。
@@ -103,7 +107,7 @@ func unescapeMount(s string) string {
 	return b.String()
 }
 
-func newExecMonitor(log *slog.Logger) (*execMonitor, error) {
+func newExecMonitor(procs *procCache, agents *agentMatcher, log *slog.Logger) (*execMonitor, error) {
 	fd, err := fanotifyInit(fanClassNotif|fanCloexec|fanNonblock, syscall.O_RDONLY|syscall.O_LARGEFILE|syscall.O_CLOEXEC)
 	if err != nil {
 		return nil, fmt.Errorf("fanotify_init: %w", err)
@@ -125,7 +129,7 @@ func newExecMonitor(log *slog.Logger) (*execMonitor, error) {
 	}
 	return &execMonitor{
 		f: os.NewFile(uintptr(fd), "fanotify-exec"), hasher: newHasher(), self: os.Getpid(),
-		limiter: newLimiter(100, 500), log: log, tracked: map[int]tracked{},
+		limiter: newLimiter(100, 500), log: log, procs: procs, agents: agents, tracked: map[int]tracked{}, escalations: map[int]time.Time{},
 	}, nil
 }
 
@@ -163,14 +167,16 @@ func (m *execMonitor) run(ctx context.Context, emit func(*event.Event)) error {
 	}
 }
 
-// launched は、execve が終わるのを少し待ってからプロセスの情報を集めて記録する。
+// launched は、execve が終わるのを少し待ってからプロセスの情報を集めて記録する。プロセスの祖先から、
+// 系譜（process.lineage）、AI エージェントの帰属（unmapped.agent）、権限昇格（一般の利用者のプロセスから root の権限で
+// 起動したこと）も調べる。
 func (m *execMonitor) launched(ctx context.Context, pid int, path, sum string, emit func(*event.Event)) {
 	select {
 	case <-time.After(execInfoDelay):
 	case <-ctx.Done():
 		return
 	}
-	p := processInfo(pid)
+	p, anc := inspect(pid)
 	if p == nil {
 		p = &event.Process{PID: pid} // 別の PID 名前空間のプロセス（fanotify は PID を 0 で渡す）
 	}
@@ -184,8 +190,8 @@ func (m *execMonitor) launched(ctx context.Context, pid int, path, sum string, e
 		case <-ctx.Done():
 			return
 		}
-		if q := processInfo(pid); q != nil && q.File != nil && q.File.Path == path {
-			p = q
+		if q, qa := inspect(pid); q != nil && q.File != nil && q.File.Path == path {
+			p, anc = q, qa
 		} else {
 			p.CmdLine = ""
 		}
@@ -194,6 +200,8 @@ func (m *execMonitor) launched(ctx context.Context, pid int, path, sum string, e
 	if sum != "" {
 		p.File.Hashes = []event.Fingerprint{{AlgorithmID: event.HashSHA256, Value: sum}}
 	}
+	now := time.Now()
+	m.procs.put(pid, p, anc, now)
 	if start, ok := startTime(pid); ok {
 		m.mu.Lock()
 		if len(m.tracked) < maxTracked {
@@ -201,9 +209,45 @@ func (m *execMonitor) launched(ctx context.Context, pid int, path, sum string, e
 		}
 		m.mu.Unlock()
 	}
-	e := event.New(event.ClassProcessActivity, event.ProcessLaunch, event.SeverityInformational, time.Now())
+	e := event.New(event.ClassProcessActivity, event.ProcessLaunch, event.SeverityInformational, now)
 	e.Process = p
+	m.agents.annotate(e, p, anc)
 	emit(e)
+	if f := m.escalationFinding(p, anc, now); f != nil {
+		emit(f)
+	}
+}
+
+// escalationFinding は、一般の利用者のプロセスから root の権限で起動したプロセスを検知結果にする（C4）。
+// 同じ元のプロセス（root の権限で動き始めたシェルの元など）からの昇格は、escalationDedupe の間は 1 件にまとめる。
+func (m *execMonitor) escalationFinding(p *event.Process, anc []ancestor, now time.Time) *event.Event {
+	origin, via, ok := escalation(p, anc)
+	if !ok {
+		return nil
+	}
+	m.mu.Lock()
+	if t, seen := m.escalations[origin.pid]; seen && now.Sub(t) < escalationDedupe {
+		m.mu.Unlock()
+		return nil
+	}
+	if len(m.escalations) > 1024 {
+		for k, t := range m.escalations {
+			if now.Sub(t) >= escalationDedupe {
+				delete(m.escalations, k)
+			}
+		}
+	}
+	m.escalations[origin.pid] = now
+	m.mu.Unlock()
+	msg := fmt.Sprintf("利用者 %s の %s（PID %d）から、root の権限で %s（PID %d）が起動しました（経路 %s）",
+		origin.uid, origin.name, origin.pid, p.Name, p.PID, strings.Join(via, " → "))
+	e := event.New(event.ClassDetectionFinding, event.FindingCreate, event.SeverityMedium, now)
+	e.Message = msg
+	e.FindingInfo = &event.FindingInfo{UID: randomID(), Title: "権限昇格", Desc: msg, Types: []string{event.FindingTypePrivilegeEscalation}}
+	e.Evidences = []event.Evidence{{Process: p}}
+	e.Unmapped = map[string]any{"privilege": map[string]any{"from_uid": origin.uid, "from_pid": origin.pid, "via": via}}
+	m.agents.annotate(e, p, anc)
+	return e
 }
 
 // pollExits は、起動を記録したプロセスが終わったかを定期的に確かめて記録する。

@@ -6,7 +6,11 @@
 //     （inotify では触ったプロセスが分からない）
 //   - プロセスの監視（C1）：fanotify の FAN_OPEN_EXEC（exec.go）
 //   - 通信とプロセスの結び付け（C2）：sock_diag と /proc（conn.go）
-//   - ファイルの監視と大量の変更の検知（C3）：fanotify の FID 方式（files.go）
+//   - ファイルの監視と大量の変更の検知（C3）、永続化と権限の設定の場所の変更、認証情報の読み取りの検知（C4、C8、C9）：
+//     fanotify の FID 方式（files.go）
+//   - 権限昇格の検知（C4）：プロセスの起動のときに祖先の利用者を調べる（exec.go、proc.go）
+//   - カーネルモジュールの読み込みの検知（C4）：/proc/modules を定期的に読む（modules.go）
+//   - AI エージェントの帰属（C9）：プロセスの祖先に設定したエージェントがあれば、イベントに unmapped.agent を付ける（agent.go）
 //   - 自己隔離（C6）：nft コマンドで専用のテーブルを作る。テーブルが消されていないかも確かめる（C10）
 //
 // 使える機能は Capabilities で申告する（C12）。
@@ -62,6 +66,9 @@ type Config struct {
 	NetworkEvents bool               // 通信と発信元のプロセスを記録する
 	Files         FileConfig         // ファイルの監視。場所がなければ監視しない
 	ConnPoll      time.Duration      // 通信の一覧を取る間隔。既定 DefaultConnPoll
+	KernelModules bool               // カーネルモジュールの読み込みを検知する
+	ModulePoll    time.Duration      // カーネルモジュールの一覧を読む間隔。既定 10 秒
+	Agents        []AgentSpec        // 見分ける AI エージェント。nil なら DefaultAgents、空なら見分けない
 	Logger        *slog.Logger
 	Now           func() time.Time
 }
@@ -77,6 +84,8 @@ type Platform struct {
 	caps     platform.Capabilities
 	newWatch func([]string) (watcher, error)
 	sources  map[platform.Capability]func() (source, error)
+	procs    *procCache
+	agents   *agentMatcher
 	hostname string
 	self     int
 }
@@ -91,7 +100,10 @@ func New(cfg Config) *Platform {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	p := &Platform{cfg: cfg, self: os.Getpid(), sources: map[platform.Capability]func() (source, error){}}
+	if cfg.Agents == nil {
+		cfg.Agents = DefaultAgents()
+	}
+	p := &Platform{cfg: cfg, self: os.Getpid(), sources: map[platform.Capability]func() (source, error){}, procs: newProcCache(), agents: newAgentMatcher(cfg.Agents)}
 	p.hostname, _ = os.Hostname()
 	p.caps = platform.Capabilities{OS: runtime.GOOS, Arch: runtime.GOARCH, Kernel: kernelRelease()}
 
@@ -115,9 +127,10 @@ func New(cfg Config) *Platform {
 		name    string
 		open    func() (source, error)
 	}{
-		{cfg.ProcessEvents, platform.CapProcessEvents, "プロセスの監視", func() (source, error) { return newExecMonitor(cfg.Logger) }},
-		{cfg.NetworkEvents, platform.CapNetworkEvents, "通信の監視", func() (source, error) { return newConnMonitor(cfg.ConnPoll) }},
-		{len(cfg.Files.Paths) > 0 || len(cfg.Files.Protect) > 0, platform.CapFileEvents, "ファイルの監視", func() (source, error) { return newFileMonitor(cfg.Files, cfg.Logger) }},
+		{cfg.ProcessEvents, platform.CapProcessEvents, "プロセスの監視", func() (source, error) { return newExecMonitor(p.procs, p.agents, cfg.Logger) }},
+		{cfg.NetworkEvents, platform.CapNetworkEvents, "通信の監視", func() (source, error) { return newConnMonitor(cfg.ConnPoll, p.procs, p.agents) }},
+		{cfg.Files.enabled(), platform.CapFileEvents, "ファイルの監視", func() (source, error) { return newFileMonitor(cfg.Files, p.procs, p.agents, cfg.Logger) }},
+		{cfg.KernelModules, platform.CapKernelModules, "カーネルモジュールの監視", func() (source, error) { return newModuleMonitor(cfg.ModulePoll) }},
 	}
 	for _, c := range candidates {
 		if !c.enabled {
@@ -220,7 +233,10 @@ func (p *Platform) watchHoneytokens(ctx context.Context, emit func(*event.Event)
 			}
 			last[key] = now
 			pruneOld(last, now)
-			emit(honeytoken.Finding(p.cfg.Tokens[fe.token], fe.op, processInfo(fe.pid), now))
+			proc, anc := p.procs.inspect(fe.pid)
+			e := honeytoken.Finding(p.cfg.Tokens[fe.token], fe.op, proc, now)
+			p.agents.annotate(e, proc, anc)
+			emit(e)
 		case err := <-errc:
 			if err == nil {
 				err = ctx.Err()

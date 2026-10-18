@@ -26,6 +26,7 @@ const (
 	fanDelete        = 0x200
 	fanEventOnChild  = 0x08000000
 	fanOnDir         = 0x40000000
+	infoTypeFID      = 1
 	infoTypeDFIDName = 2
 	maxHandleSize    = 128
 )
@@ -44,8 +45,9 @@ func makeFIDKey(fsid [8]byte, handleType int32, handle []byte) fidKey {
 type fidEvent struct {
 	mask uint64
 	pid  int32
-	dir  fidKey // 親ディレクトリ
+	dir  fidKey // 親ディレクトリ（ディレクトリの印で捕らえたイベント）
 	name string // エントリーの名前
+	file fidKey // ファイルそのもの（ファイルの印で捕らえたイベント。FAN_REPORT_FID）
 }
 
 // parseFIDEvents は FID 方式の fanotify のイベントの列を解析する。
@@ -67,28 +69,24 @@ func parseFIDEvents(buf []byte) ([]fidEvent, error) {
 			if l < 4 || l > len(info) {
 				return evs, errors.New("fanotify: 情報の長さが不正です")
 			}
-			if typ == infoTypeDFIDName {
-				// ヘッダー（4）、fsid（8）、handle_bytes（4）、handle_type（4）、ハンドル、名前（NUL 終端）
-				rec := info[4:l]
-				if len(rec) < 16 {
-					return evs, errors.New("fanotify: 識別子が短すぎます")
+			if typ == infoTypeDFIDName || typ == infoTypeFID {
+				// ヘッダー（4）、fsid（8）、handle_bytes（4）、handle_type（4）、ハンドル、（DFID_NAME なら）名前（NUL 終端）
+				key, rest, err := parseFileHandle(info[4:l])
+				if err != nil {
+					return evs, err
 				}
-				var fsid [8]byte
-				copy(fsid[:], rec[0:8])
-				hb := int(binary.NativeEndian.Uint32(rec[8:12]))
-				ht := int32(binary.NativeEndian.Uint32(rec[12:16]))
-				if hb > maxHandleSize || 16+hb > len(rec) {
-					return evs, errors.New("fanotify: ハンドルの長さが不正です")
-				}
-				ev.dir = makeFIDKey(fsid, ht, rec[16:16+hb])
-				name := rec[16+hb:]
-				for i, c := range name {
-					if c == 0 {
-						name = name[:i]
-						break
+				if typ == infoTypeFID {
+					ev.file = key
+				} else {
+					ev.dir = key
+					for i, c := range rest {
+						if c == 0 {
+							rest = rest[:i]
+							break
+						}
 					}
+					ev.name = string(rest)
 				}
-				ev.name = string(name)
 			}
 			info = info[l:]
 		}
@@ -98,7 +96,22 @@ func parseFIDEvents(buf []byte) ([]fidEvent, error) {
 	return evs, nil
 }
 
-// dirKey は、パス path のディレクトリの識別子を、イベントと同じ形で返す。
+// parseFileHandle は fsid（8）、handle_bytes（4）、handle_type（4）、ハンドルを読み、識別子と残りを返す。
+func parseFileHandle(rec []byte) (fidKey, []byte, error) {
+	if len(rec) < 16 {
+		return "", nil, errors.New("fanotify: 識別子が短すぎます")
+	}
+	var fsid [8]byte
+	copy(fsid[:], rec[0:8])
+	hb := int(binary.NativeEndian.Uint32(rec[8:12]))
+	ht := int32(binary.NativeEndian.Uint32(rec[12:16]))
+	if hb > maxHandleSize || 16+hb > len(rec) {
+		return "", nil, errors.New("fanotify: ハンドルの長さが不正です")
+	}
+	return makeFIDKey(fsid, ht, rec[16:16+hb]), rec[16+hb:], nil
+}
+
+// dirKey は、パス path のファイルかディレクトリの識別子を、イベントと同じ形で返す。
 func dirKey(path string) (fidKey, error) {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(path, &st); err != nil {

@@ -559,11 +559,13 @@ func (l *lab) setup(machines []*machine) {
 		keyDir := filepath.Join(l.dir, m.id)
 		l.susanoo("client", "keygen", "-dir", keyDir)
 		l.susanoo("ctl", "issue", "-dir", l.ctrlDir, "-id", m.id, "-pub", filepath.Join(keyDir, "client.pub"), "-out", keyDir)
-		// ファイルの監視は TestClient で確かめる。ここでは使わない（既定の場所は実際のホームのため）。
+		// ファイルとカーネルモジュールの監視は TestClient で確かめる。ここでは使わない（既定の場所は実際の /etc とホームのため）。
 		writeJSON(t, filepath.Join(l.dir, m.id+".json"), map[string]any{
 			"controller": controllerAddr, "pki_dir": m.id, "state_dir": m.id + "-state", "heartbeat_interval": "1s",
 			"honeytokens": []map[string]string{{"path": l.token(m.id), "kind": "aws"}},
-			"files":       map[string]any{"watch": []string{}, "protect": []string{}},
+			"files": map[string]any{"watch": []string{}, "persistence": []string{}, "privilege": []string{},
+				"sensitive": []map[string]any{}, "protect": []string{}},
+			"kernel_modules": false,
 		})
 	}
 }

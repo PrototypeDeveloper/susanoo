@@ -79,7 +79,7 @@ func TestRulesCommands(t *testing.T) {
 		t.Fatalf("配布: %s %s", out, errOut)
 	}
 	i := info()
-	if i.Current.Version != 1 || i.Current.Name != "標準（試験運用）" || i.Exceptions != 2 || len(i.Rules) < 15 {
+	if i.Current.Version != 1 || i.Current.Name != "標準（試験運用）" || i.Exceptions != 3 || len(i.Rules) < 15 {
 		t.Errorf("配布した後の状態 = %+v", i)
 	}
 	code, out, _ := ctl("stats")

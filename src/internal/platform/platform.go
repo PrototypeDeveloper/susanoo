@@ -23,6 +23,7 @@ const (
 	CapFileEvents    Capability = "file_events"    // 重要なファイルの変更の監視（C3）
 	CapHoneytoken    Capability = "honeytoken"     // おとりへの接触の検知（C5）
 	CapIsolation     Capability = "isolation"      // ホストのファイアウォールによる自己隔離（C6）
+	CapKernelModules Capability = "kernel_modules" // カーネルモジュールの読み込みの監視（C4）
 )
 
 // Capabilities は OS と、使える機能の一覧。
