@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "name": "標準（学習モード）",
+  "issued_at": "2026-10-18T00:00:00Z",
+  "response": "monitor",
+  "on_failure": "fail_open",
+  "groups": [
+    {
+      "name": "default",
+      "egress": {
+        "default": "learn",
+        "deny": [
+          { "cidr": "203.0.113.0/24" },
+          { "domain": "*.example.net" }
+        ]
+      },
+      "isolation": "management_and_updates",
+      "updates": [
+        { "domain": "*.ubuntu.com", "ports": [80, 443], "protocol": "tcp" }
+      ]
+    },
+    {
+      "name": "server",
+      "egress": {
+        "default": "deny",
+        "allow": [
+          { "domain": "*.ubuntu.com", "ports": [80, 443], "protocol": "tcp" },
+          { "cidr": "192.0.2.0/24", "ports": [123], "protocol": "udp" }
+        ]
+      },
+      "isolation": "management",
+      "require_approval": true
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "controller": "192.168.10.1:8443",
+  "pki_dir": "/etc/susanoo/client",
+  "state_dir": "/var/lib/susanoo/client",
+  "heartbeat_interval": "5s",
+  "honeytokens": [
+    {
+      "path": "/home/user/.aws/credentials",
+      "kind": "aws"
+    },
+    {
+      "path": "/home/user/.ssh/id_ed25519_backup",
+      "kind": "ssh"
+    },
+    {
+      "path": "/home/user/project/.env",
+      "kind": "env"
+    },
+    {
+      "path": "/home/user/Documents/パスワード一覧.txt",
+      "kind": "text"
+    }
+  ],
+  "nft": "/usr/sbin/nft",
+  "process_monitor": true,
+  "connection_monitor": true,
+  "files": {
+    "watch": [
+      "/etc/passwd",
+      "/etc/sudoers.d",
+      "/etc/cron.d",
+      "/etc/systemd/system",
+      "/home/user/.ssh",
+      "/home/user/.bashrc"
+    ],
+    "protect": [
+      "/home/user/Documents",
+      "/home/user/ドキュメント"
+    ],
+    "mass_files": 200,
+    "mass_window": "30s"
+  },
+  "privilege_separation": true,
+  "analyzer_user": "nobody"
+}

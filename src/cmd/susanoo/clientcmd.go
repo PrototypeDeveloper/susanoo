@@ -1,0 +1,261 @@
+package main
+
+import (
+	"cmp"
+	"context"
+	"crypto/ed25519"
+	"crypto/x509"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"io/fs"
+	"log/slog"
+	"net/netip"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"syscall"
+	"time"
+
+	"susanoo/internal/client"
+	"susanoo/internal/config"
+	"susanoo/internal/honeytoken"
+	"susanoo/internal/keys"
+	"susanoo/internal/nft"
+	"susanoo/internal/platform/linux"
+	"susanoo/internal/privsep"
+)
+
+// clientConfig は CLIENT モードの設定ファイル。相対パスは設定ファイルのあるディレクトリから数える。
+type clientConfig struct {
+	Controller        string            `json:"controller"`           // CONTROLLER のアドレスとポート
+	PKIDir            string            `json:"pki_dir"`              // 端末の鍵と証明書のディレクトリ
+	StateDir          string            `json:"state_dir"`            // 適用した指示とおとりの記録の保存先
+	HeartbeatInterval config.Duration   `json:"heartbeat_interval"`   // 既定 5s
+	Honeytokens       []honeytoken.Spec `json:"honeytokens"`          // 置くおとり
+	NFT               string            `json:"nft"`                  // nft コマンドの場所。既定 /usr/sbin/nft
+	Isolation         *bool             `json:"isolation"`            // false なら自己隔離しない。既定 true
+	ProcessMonitor    *bool             `json:"process_monitor"`      // プロセスの監視（C1）。既定 true
+	ConnectionMonitor *bool             `json:"connection_monitor"`   // 通信とプロセスの結び付け（C2）。既定 true
+	Files             *fileConfig       `json:"files"`                // ファイルの監視（C3）。省略すると既定の場所を監視する
+	Separation        *bool             `json:"privilege_separation"` // 権限の分離（C10）。既定 true（root で動かすとき）
+	User              string            `json:"analyzer_user"`        // 解析部を動かす利用者。既定 nobody
+}
+
+// defaultAnalyzerUser は解析部を動かす既定の利用者。専用の利用者（susanoo など）を作って指定するのが望ましい。
+const defaultAnalyzerUser = "nobody"
+
+type fileConfig struct {
+	Watch      []string        `json:"watch"`       // 重要な場所（ファイルかディレクトリ）
+	Protect    []string        `json:"protect"`     // 大量の変更を監視する場所（下の階層を含む）
+	MassFiles  int             `json:"mass_files"`  // 既定 200
+	MassWindow config.Duration `json:"mass_window"` // 既定 30s
+}
+
+func runClient(ctx context.Context, args []string, stderr io.Writer) int {
+	flags := flag.NewFlagSet("client", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	path := flags.String("config", "/etc/susanoo/client.json", "設定ファイル")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage
+	}
+	var cfg clientConfig
+	if err := config.Load(*path, &cfg); err != nil {
+		return fail(stderr, err)
+	}
+	pkiDir := config.Resolve(*path, cfg.PKIDir)
+	stateDir := config.Resolve(*path, cfg.StateDir)
+	addr, err := netip.ParseAddrPort(cfg.Controller)
+	if err != nil {
+		return fail(stderr, fmt.Errorf("controller %q はアドレスとポート（例: 192.168.10.1:8443）で書いてください", cfg.Controller))
+	}
+	ca, err := loadCA(pkiDir)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	cert, err := loadLeaf(pkiDir, fileClientCert, fileClientKey)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	commandKey, err := loadCommandKey(pkiDir)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		return fail(stderr, err)
+	}
+
+	log := newLogger(stderr)
+	tokens, warnings, err := honeytoken.Plant(cfg.Honeytokens, filepath.Join(stateDir, "honeytokens.json"), time.Now())
+	if err != nil {
+		return fail(stderr, err)
+	}
+	for _, w := range warnings {
+		log.Warn(w.Error())
+	}
+	pcfg := linux.Config{
+		Tokens:        tokens,
+		ProcessEvents: cfg.ProcessMonitor == nil || *cfg.ProcessMonitor,
+		NetworkEvents: cfg.ConnectionMonitor == nil || *cfg.ConnectionMonitor,
+		Files:         linux.FileConfig{Paths: linux.DefaultWatchPaths(), Protect: linux.DefaultProtectPaths()},
+		Logger:        log,
+	}
+	if f := cfg.Files; f != nil {
+		pcfg.Files = linux.FileConfig{Paths: f.Watch, Protect: f.Protect, MassFiles: f.MassFiles, MassWindow: f.MassWindow.Or(0)}
+	}
+	if cfg.Isolation == nil || *cfg.Isolation {
+		pcfg.NFT = nft.Command{Path: cfg.NFT}
+	}
+	separate := cfg.Separation == nil || *cfg.Separation
+	if separate && os.Geteuid() != 0 {
+		log.Warn("root でないため、権限を分離せずに 1 つのプロセスで動きます")
+		separate = false
+	}
+	if separate {
+		log = log.With("役割", "執行部")
+		pcfg.Logger = log
+	}
+	p := linux.New(pcfg)
+
+	interval := cfg.HeartbeatInterval.Or(client.DefaultHeartbeatInterval)
+	local, err := client.NewLocal(client.LocalConfig{
+		Cert:          cert,
+		CA:            pool,
+		CertPath:      filepath.Join(pkiDir, fileClientCert), // 更新した証明書で置き換える（M1）
+		CommandKey:    commandKey,
+		StateDir:      stateDir,
+		Controller:    addr,
+		CheckInterval: interval,
+		Platform:      p,
+		Logger:        log,
+	})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	log.Info("CLIENT モードで起動しました", "端末", local.ID(), "機能", p.Capabilities().Features, "おとり", len(tokens))
+	local.Restore(ctx)
+
+	if separate {
+		hello := privsep.Hello{Controller: addr.String(), CA: [][]byte{ca.Raw}, Chain: cert.Certificate, HeartbeatInterval: interval}
+		err = runExecutor(ctx, local, hello, cmp.Or(cfg.User, defaultAnalyzerUser), log)
+	} else {
+		var agent *client.Agent
+		agent, err = client.New(client.Config{
+			Controller: addr, CA: pool, Chain: cert.Certificate, HeartbeatInterval: interval, Executor: local, Logger: log,
+		})
+		if err == nil {
+			err = agent.Run(ctx)
+		}
+	}
+	if err != nil {
+		return fail(stderr, err)
+	}
+	log.Info("停止しました")
+	return exitOK
+}
+
+// runExecutor は CLIENT の執行部（C10）。自分自身を利用者 user で起動し直して解析部とし、capability を
+// 必要最小限まで手放してから、解析部の要求に応える。解析部が止まったらエラーを返す（systemd などで起動し直す前提）。
+func runExecutor(ctx context.Context, local *client.Local, hello privsep.Hello, user string, log *slog.Logger) error {
+	analyzer, conn, err := privsep.Spawn(user, nil, "client", "analyzer")
+	if err != nil {
+		return err
+	}
+	wait := func() {
+		select {
+		case <-analyzer.Exited:
+		case <-time.After(5 * time.Second):
+			log.Warn("解析部が終わりません", "PID", analyzer.Pid)
+		}
+	}
+	if err := privsep.DropCapabilities(privsep.ExecutorCaps); err != nil {
+		conn.Close()
+		wait()
+		return err
+	}
+	if err := privsep.Harden(); err != nil {
+		conn.Close()
+		wait()
+		return err
+	}
+	log.Info("権限を分離しました", "解析部の PID", analyzer.Pid, "解析部の利用者", user)
+	err = privsep.Serve(ctx, conn, local, hello, log)
+	wait() // 解析部は、つながりが切れると終わる
+	return err
+}
+
+// runAnalyzer は CLIENT の解析部（C10）。執行部が非特権の利用者で起動し、fd 3 でつなぐ。
+// 設定ファイルや鍵は読まず、必要な情報は執行部から受け取る。執行部とのつながりが切れたら終わり、
+// シグナルでは終わらない（止めるのは執行部）。
+func runAnalyzer(stderr io.Writer) int {
+	signal.Ignore(os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	log := newLogger(stderr).With("役割", "解析部")
+	if os.Geteuid() == 0 {
+		return fail(stderr, errors.New("解析部を root で動かすことはできません"))
+	}
+	if err := privsep.Harden(); err != nil {
+		return fail(stderr, err)
+	}
+	if err := privsep.SetName("susanoo"); err != nil {
+		log.Warn("プロセス名を付けられません", "エラー", err)
+	}
+	f, err := privsep.OpenConnFD()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	remote, hello, err := privsep.Dial(f, log)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	addr, err := netip.ParseAddrPort(hello.Controller)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	pool, err := hello.CertPool()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	agent, err := client.New(client.Config{
+		Controller: addr, CA: pool, Chain: hello.Chain, HeartbeatInterval: hello.HeartbeatInterval, Executor: remote, Logger: log,
+	})
+	if err != nil {
+		return fail(stderr, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { <-remote.Done(); cancel() }()
+	agent.Run(ctx)
+	return exitOK
+}
+
+func runKeygen(args []string, stdout, stderr io.Writer) int {
+	flags := flag.NewFlagSet("client keygen", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	dir := flags.String("dir", "/etc/susanoo/client", "鍵を置くディレクトリ")
+	if err := flags.Parse(args); err != nil {
+		return exitUsage
+	}
+	keyPath := filepath.Join(*dir, fileClientKey)
+	if _, err := os.Stat(keyPath); !errors.Is(err, fs.ErrNotExist) {
+		return fail(stderr, fmt.Errorf("%s が既にあります。作り直す場合は先に消してください", keyPath))
+	}
+	if err := os.MkdirAll(*dir, 0o700); err != nil {
+		return fail(stderr, err)
+	}
+	priv, err := keys.Generate()
+	if err != nil {
+		return fail(stderr, err)
+	}
+	if err := keys.SavePrivate(keyPath, priv); err != nil {
+		return fail(stderr, err)
+	}
+	pubPath := filepath.Join(*dir, fileClientPub)
+	if err := keys.SavePublic(pubPath, priv.Public().(ed25519.PublicKey)); err != nil {
+		return fail(stderr, err)
+	}
+	fmt.Fprintf(stdout, "端末の鍵を作りました。\n次に %s を CONTROLLER に渡し、「susanoo ctl issue」で証明書を発行してください。\n", pubPath)
+	return exitOK
+}

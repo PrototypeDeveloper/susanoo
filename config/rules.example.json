@@ -1,0 +1,75 @@
+{
+  "name": "標準（試験運用）",
+  "scoring": {"half_life": "24h"},
+  "behavior": {
+    "beacon": {"min_count": 8, "min_interval": "10s", "max_interval": "2h", "max_jitter": 0.15, "cooldown": "6h"},
+    "large_upload": {"bytes": 536870912, "window": "1h"},
+    "internal_scan": {"targets": 30, "window": "1m"},
+    "new_destinations": {"count": 50, "window": "1h", "baseline": "72h"},
+    "off_hours": {"groups": [], "days": ["mon", "tue", "wed", "thu", "fri"], "start": "08:00", "end": "20:00", "timezone": "Asia/Tokyo", "min_bytes": 10485760}
+  },
+  "rules": [
+    {
+      "id": "download-and-run",
+      "name": "ダウンロードしてそのまま実行",
+      "description": "curl や wget で取得したスクリプトを、ファイルに保存せずにシェルで実行した",
+      "class": "process",
+      "mode": "monitor",
+      "score": 60,
+      "severity": 4,
+      "match": {"field": "process.cmd_line", "op": "regex", "value": "(curl|wget)[^|]*\\|\\s*(sudo\\s+)?(ba|z|da)?sh\\b"}
+    },
+    {
+      "id": "reverse-shell",
+      "name": "リバースシェル",
+      "description": "シェルの入出力を外部の接続につないだ",
+      "class": "process",
+      "mode": "monitor",
+      "score": 100,
+      "severity": 5,
+      "match": {"any": [
+        {"field": "process.cmd_line", "op": "regex", "value": "(ba)?sh\\s+-i\\s+>&\\s*/dev/(tcp|udp)/"},
+        {"field": "process.cmd_line", "op": "regex", "value": "\\bnc(at)?\\b.*\\s-e\\s+/bin/(ba)?sh"}
+      ]}
+    },
+    {
+      "id": "long-dns-label",
+      "name": "長い名前の問い合わせ",
+      "description": "DNS トンネルなどで、データを名前に埋め込んだ問い合わせの疑い",
+      "class": "dns",
+      "mode": "monitor",
+      "score": 30,
+      "match": {"field": "query.hostname", "op": "regex", "value": "^[a-z0-9-]{50,}\\."}
+    },
+    {
+      "id": "many-blocked-dns",
+      "name": "遮断した名前の問い合わせが続く",
+      "description": "拒否リストなどで遮断した名前を、短い間に何度も問い合わせた（マルウェアの通信先の探索の疑い）",
+      "class": "dns",
+      "mode": "monitor",
+      "score": 30,
+      "threshold": {"count": 20, "window": "5m"},
+      "match": {"field": "unmapped.dns.action", "op": "eq", "value": "block"}
+    },
+    {
+      "id": "new-device",
+      "name": "新しい機器",
+      "finding": "new_device",
+      "mode": "monitor",
+      "score": 10
+    }
+  ],
+  "exceptions": [
+    {
+      "rules": ["beacon"],
+      "match": {"field": "dst_endpoint.hostname", "op": "suffix", "value": ".windowsupdate.com"},
+      "reason": "OS の更新の確認は一定の間隔で行われる"
+    },
+    {
+      "rules": ["download-and-run"],
+      "groups": ["server"],
+      "match": {"field": "process.user.name", "op": "eq", "value": "deploy"},
+      "reason": "サーバーの配備の手順で、deploy の利用者がインストーラーを取得して実行する"
+    }
+  ]
+}
