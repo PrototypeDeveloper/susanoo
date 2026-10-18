@@ -34,10 +34,11 @@ type device struct {
 	Isolation policy.IsolationLevel `json:"isolation,omitempty"` // 指示している隔離
 	Reason    string                `json:"reason,omitempty"`
 	Since     time.Time             `json:"since,omitzero"`
-	Version   uint64                `json:"version,omitempty"` // 指示の版数
-	Pending   string                `json:"pending,omitempty"` // 承認待ちの隔離の理由
-	Lost      bool                  `json:"lost,omitempty"`    // ハートビートの途絶を検知済み
-	Away      bool                  `json:"away,omitempty"`    // ハートビートが途絶え、LAN にもいない（不在）
+	Version   uint64                `json:"version,omitempty"`  // 指示の版数
+	Evidence  uint64                `json:"evidence,omitempty"` // 証拠を集める要求の番号（C11）
+	Pending   string                `json:"pending,omitempty"`  // 承認待ちの隔離の理由
+	Lost      bool                  `json:"lost,omitempty"`     // ハートビートの途絶を検知済み
+	Away      bool                  `json:"away,omitempty"`     // ハートビートが途絶え、LAN にもいない（不在）
 
 	CertExpiry time.Time `json:"cert_expiry,omitzero"` // 端末が最後に示した証明書の有効期限
 	Revoked    time.Time `json:"revoked,omitzero"`     // 証明書を失効させた時刻

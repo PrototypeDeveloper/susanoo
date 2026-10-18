@@ -55,6 +55,11 @@ func (c *Controller) Handler() http.Handler {
 	mux.Handle("GET "+api.PathIntel+"/payload", c.require(pki.RoleAdmin, c.getIntelPayload))
 	mux.Handle("GET "+api.PathIntel+"/check", c.require(pki.RoleAdmin, c.checkIntel))
 	mux.Handle("POST "+api.PathIntel, c.require(pki.RoleAdmin, c.pushIntel))
+	mux.Handle("POST "+api.PathEvidence, c.require(pki.RoleClient, c.postEvidence))
+	mux.Handle("GET "+api.PathEvidence, c.require(pki.RoleAdmin, c.listEvidence))
+	mux.Handle("GET "+api.PathEvidence+"/{device}/{id}", c.require(pki.RoleAdmin, c.getEvidence))
+	mux.Handle("POST "+api.PathDevices+"/{id}/evidence", c.require(pki.RoleAdmin, c.requestEvidence))
+	mux.Handle("POST "+api.PathNotifyTest, c.require(pki.RoleAdmin, c.testNotify))
 	return mux
 }
 

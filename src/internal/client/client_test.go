@@ -25,6 +25,7 @@ import (
 	"susanoo/internal/controller"
 	"susanoo/internal/honeytoken"
 	"susanoo/internal/keys"
+	"susanoo/internal/notify"
 	"susanoo/internal/pki"
 	"susanoo/internal/pki/pkitest"
 	"susanoo/internal/platform"
@@ -58,11 +59,18 @@ func (f *fakeEnforcer) members() map[netip.Addr]policy.IsolationLevel {
 
 func startController(t *testing.T, env *pkitest.Env, enf controller.Enforcer) netip.AddrPort {
 	t.Helper()
+	return startControllerWith(t, env, enf, nil)
+}
+
+// startControllerWith は、通知の送り手 n（nil なら通知しない）を使う CONTROLLER を動かす。
+func startControllerWith(t *testing.T, env *pkitest.Env, enf controller.Enforcer, n *notify.Notifier) netip.AddrPort {
+	t.Helper()
 	ctrl, err := controller.New(controller.Config{
-		Dir:    t.TempDir(),
-		CA:     env.CA.Pool(),
-		Cert:   env.Leaf(t, pki.RoleController, "main"),
-		Signer: env.Signer,
+		Notifier: n,
+		Dir:      t.TempDir(),
+		CA:       env.CA.Pool(),
+		Cert:     env.Leaf(t, pki.RoleController, "main"),
+		Signer:   env.Signer,
 		Policy: &policy.Policy{
 			Version: 1, Name: "試験", IssuedAt: time.Now(), Response: policy.ResponseEnforce, OnFailure: policy.FailOpen,
 			Groups: []policy.Group{{Name: policy.DefaultGroup, Egress: policy.Egress{Default: policy.EgressAllow}, Isolation: policy.IsolateManagement}},

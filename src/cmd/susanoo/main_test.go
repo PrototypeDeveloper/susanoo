@@ -66,6 +66,9 @@ func TestExampleConfigs(t *testing.T) {
 	if g.Separation == nil || !*g.Separation || g.ControllerUser != defaultControllerUser || g.LANUser != defaultLANUser {
 		t.Errorf("GW の権限の分離の例 = %v %q %q", g.Separation, g.ControllerUser, g.LANUser)
 	}
+	if g.Notify == nil || len(g.Notify.Destinations) != 3 || g.Notify.Validate() != nil {
+		t.Errorf("通知の例 = %+v（%v）", g.Notify, g.Notify.Validate())
+	}
 	var c clientConfig
 	if err := config.Load(filepath.Join(dir, "client.example.json"), &c); err != nil {
 		t.Error(err)
@@ -75,6 +78,9 @@ func TestExampleConfigs(t *testing.T) {
 	}
 	if c.Separation == nil || !*c.Separation || c.User != defaultAnalyzerUser {
 		t.Errorf("権限の分離の例 = %v %q", c.Separation, c.User)
+	}
+	if c.Evidence == nil || len(c.Evidence.Logs) != 3 {
+		t.Errorf("証拠の保全の例 = %+v", c.Evidence)
 	}
 }
 

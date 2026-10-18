@@ -38,6 +38,7 @@ import (
 	"susanoo/internal/behavior"
 	"susanoo/internal/event"
 	"susanoo/internal/intel"
+	"susanoo/internal/notify"
 	"susanoo/internal/policy"
 	"susanoo/internal/rules"
 	"susanoo/internal/sign"
@@ -74,6 +75,7 @@ type Config struct {
 	Egress           Egress            // 外部通信の制御。nil なら端末のグループを渡さない
 	RulesKey         ed25519.PublicKey // 検知ルールの署名を確かめる公開鍵（ポリシーと同じ鍵）。nil なら配布を受け付けない（既定のルールだけ）
 	Intel            IntelManager      // 脅威情報の配布に使う。nil なら配布しない
+	Notifier         *notify.Notifier  // 管理者への通知（M7）。nil なら通知しない
 	IntelSet         *intel.Set        // 執行部が使っている脅威情報（なければ nil）
 	HeartbeatTimeout time.Duration     // これより長くハートビートがなければ隔離する
 	MaxEventBytes    int64             // 保存するイベントの合計の上限
@@ -155,6 +157,9 @@ type Controller struct {
 	detector      *behavior.Detector // 振る舞いの検知（G6）
 	behaviorMu    sync.Mutex
 	behaviorSaved time.Time
+
+	evidenceMu sync.Mutex
+	evidence   []api.EvidenceInfo // 保存した証拠（C11）
 }
 
 // New は台帳、監査ログ、イベントの保存先を開いて CONTROLLER を作る。
@@ -228,6 +233,11 @@ func New(cfg Config) (*Controller, error) {
 		al.Close()
 		return nil, err
 	}
+	if err := c.initEvidence(); err != nil {
+		events.Close()
+		al.Close()
+		return nil, err
+	}
 	return c, nil
 }
 
@@ -255,6 +265,9 @@ func (c *Controller) Serve(ctx context.Context, ln net.Listener) error {
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ServeTLS(ln, "", "") }()
 	go c.loop(ctx)
+	if c.cfg.Notifier.Enabled() {
+		go c.cfg.Notifier.Run(ctx)
+	}
 	c.log.Info("管理通信の受け付けを始めました", "アドレス", ln.Addr().String())
 
 	select {
@@ -422,9 +435,11 @@ func (c *Controller) decideLocked(group string, canary bool, target, reason stri
 	switch c.pol.Response {
 	case policy.ResponseMonitor:
 		c.log.Info("監視モードのため隔離しません", "対象", target, "理由", reason)
+		c.notifyAlertLocked(target, reason, c.pol.Response)
 		return decideNone, ""
 	case policy.ResponseAlert:
 		c.log.Warn("隔離が必要な検知がありました（警告モードのため隔離しません）", "対象", target, "理由", reason)
+		c.notifyAlertLocked(target, reason, c.pol.Response)
 		return decideNone, ""
 	}
 	g := c.groupLocked(group, canary)
@@ -449,6 +464,7 @@ func (c *Controller) trigger(id, reason string) {
 			c.saveLocked()
 			c.auditLocked(actorSystem, ActionIsolatePending, d.ID, d.Addr, map[string]any{"reason": reason})
 			c.log.Warn("隔離の承認を待っています", "端末", id, "理由", reason)
+			c.notifyPendingLocked(d.ID, "", cmpOr(d.Group, policy.DefaultGroup), reason)
 		}
 	case decideIsolate:
 		c.isolateLocked(d, level, reason, actorSystem)
@@ -463,6 +479,7 @@ func (c *Controller) isolateLocked(d *device, level policy.IsolationLevel, reaso
 	c.auditLocked(actor, ActionIsolate, d.ID, d.Addr, map[string]any{"level": level, "reason": reason, "macs": c.linkedMACsLocked(d.ID)})
 	c.log.Warn("端末を隔離しました", "端末", d.ID, "段階", level, "理由", reason, "操作", actor)
 	c.syncLocked()
+	c.notifyIsolateLocked(d.ID, "", d.Addr, cmpOr(d.Group, policy.DefaultGroup), level, reason, actor, c.riskLocked("device:"+d.ID))
 }
 
 func (c *Controller) releaseLocked(d *device, actor string) {
@@ -477,6 +494,9 @@ func (c *Controller) releaseLocked(d *device, actor string) {
 	c.auditLocked(actor, ActionRelease, d.ID, d.Addr, map[string]any{"previous": prev})
 	c.log.Info("端末の隔離を解除しました", "端末", d.ID, "操作", actor)
 	c.syncLocked()
+	if prev != "" {
+		c.notifyReleaseLocked(d.ID, "", prev, actor)
+	}
 }
 
 // syncLocked は隔離している端末と機器を、アドレスと MAC アドレスで GW で遮断し、
@@ -568,7 +588,7 @@ func (c *Controller) ReportChange(path string) {
 
 // commandLocked は端末への署名付きの指示を作る。
 func (c *Controller) commandLocked(d *device) (sign.Envelope, error) {
-	cmd := api.Command{DeviceID: d.ID, Version: d.Version, Isolation: d.Isolation, IssuedAt: c.now().UTC()}
+	cmd := api.Command{DeviceID: d.ID, Version: d.Version, Isolation: d.Isolation, Evidence: d.Evidence, IssuedAt: c.now().UTC()}
 	if d.Isolation == policy.IsolateManagementAndUpdates {
 		cmd.Updates = c.groupLocked(d.Group, c.deviceCanaryLocked(d)).UpdatePrefixes()
 	}

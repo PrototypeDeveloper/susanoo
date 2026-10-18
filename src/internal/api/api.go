@@ -38,6 +38,12 @@ const (
 	// PathIntel は脅威情報の配布（G7）。GET で IntelInfo、POST で IntelPush を受け付ける。
 	// PathIntel+"/payload" で今の版の中身（intel.Set）、PathIntel+"/check?q=名前かアドレス" で照合の結果（[]IntelMatch）。
 	PathIntel = "/v1/intel"
+	// PathEvidence は証拠の保全（C11）。CLIENT は POST で EvidenceUpload を送り、管理者は GET で一覧（[]EvidenceInfo。
+	// ?device=端末 で絞る）を見る。PathEvidence+"/{端末}/{ID}" で中身（Evidence。?signed=1 なら署名付きのまま）。
+	// 証拠を集めさせるのは PathDevices+"/{端末}/evidence" への POST。
+	PathEvidence = "/v1/evidence"
+	// PathNotifyTest は試験の通知を送る（M7）。応答は []NotifyResult。
+	PathNotifyTest = "/v1/notify/test"
 )
 
 // MaxBodyBytes は要求の本文の上限。
@@ -45,6 +51,12 @@ const MaxBodyBytes = 1 << 20
 
 // MaxIntelBytes は脅威情報の配布と中身の取得の、本文の上限（一覧が大きいため、ほかの要求より大きくする）。
 const MaxIntelBytes = 8 << 20
+
+// MaxEvidenceBytes は証拠の送信の本文の上限（中身の上限 MaxEvidencePayload を署名して base64 にした大きさに収まる）。
+const MaxEvidenceBytes = 8 << 20
+
+// MaxEvidencePayload は証拠の中身（Evidence の JSON）の上限。超えるときは CLIENT がログ、プロセスの順に削る。
+const MaxEvidencePayload = 4 << 20
 
 // MaxEventsPerBatch は 1 回で送れるイベントの上限。
 const MaxEventsPerBatch = 500
@@ -82,7 +94,63 @@ type Command struct {
 	Version   uint64                `json:"version"`
 	Isolation policy.IsolationLevel `json:"isolation,omitempty"` // 空なら隔離しない
 	Updates   []netip.Prefix        `json:"updates,omitempty"`   // 隔離中も許可する更新サーバー
+	Evidence  uint64                `json:"evidence,omitempty"`  // 証拠を集める要求の番号。適用済みより大きければ集める（C11）
 	IssuedAt  time.Time             `json:"issued_at"`
+}
+
+// 証拠を集めたきっかけ（Evidence.Reason）。
+const (
+	EvidenceReasonIsolation = "isolation" // 隔離の指示を受けた
+	EvidenceReasonRequest   = "request"   // 管理者が求めた（ctl evidence collect）
+)
+
+// Evidence は CLIENT の執行部が集めた証拠（C11）。端末の鍵で署名して送る（sign.PurposeEvidence）。
+type Evidence struct {
+	DeviceID  string                `json:"device_id"`
+	ID        string                `json:"id"` // 証拠の ID（crypto/rand.Text の形）
+	Time      time.Time             `json:"time"`
+	Reason    string                `json:"reason"`  // EvidenceReason*
+	Command   uint64                `json:"command"` // きっかけになった指示の版数
+	Isolation policy.IsolationLevel `json:"isolation,omitempty"`
+	Hostname  string                `json:"hostname,omitempty"`
+	Snapshot  platform.Snapshot     `json:"snapshot"`
+}
+
+// EvidenceUpload は CLIENT が送る証拠。
+type EvidenceUpload struct {
+	Envelope sign.Envelope `json:"envelope"` // sign.PurposeEvidence で署名した Evidence
+}
+
+// EvidenceInfo は CONTROLLER が保存した証拠の概要。
+type EvidenceInfo struct {
+	Device      string    `json:"device"`
+	ID          string    `json:"id"`
+	Time        time.Time `json:"time"`     // 端末が集めた時刻
+	Received    time.Time `json:"received"` // CONTROLLER が受け取った時刻
+	Reason      string    `json:"reason"`
+	SHA256      string    `json:"sha256"` // 中身（署名した JSON）のハッシュ。監査ログにも記録する
+	Bytes       int       `json:"bytes"`
+	Processes   int       `json:"processes"`
+	Connections int       `json:"connections"`
+	Logs        int       `json:"logs"`
+}
+
+// NotifyResult は試験の通知の結果（M7）。
+type NotifyResult struct {
+	Name  string `json:"name"`
+	Error string `json:"error,omitempty"` // 空なら送れた
+}
+
+// NotifyStatus は通知の宛先ごとの送信の状況（M7）。
+type NotifyStatus struct {
+	Name       string    `json:"name"`
+	Type       string    `json:"type"`
+	Sent       int64     `json:"sent"`
+	Failed     int64     `json:"failed"`
+	Suppressed int64     `json:"suppressed"`
+	LastSent   time.Time `json:"last_sent,omitzero"`
+	LastError  string    `json:"last_error,omitempty"`
+	LastFailed time.Time `json:"last_failed,omitzero"`
 }
 
 // Device は ctl に返す端末の状態。
@@ -197,6 +265,7 @@ type Status struct {
 	Rules          RulesVersion    `json:"rules"`                     // 検知ルールの今の版（版数 0 は既定のルールだけ）
 	Intel          IntelInfo       `json:"intel"`                     // 脅威情報の今の版
 	Risky          []Risk          `json:"risky,omitempty"`           // 危険度の高い端末と機器（高い順）
+	Notify         []NotifyStatus  `json:"notify,omitempty"`          // 通知の宛先ごとの送信の状況
 }
 
 // RulesPush は署名付きの検知ルールの配布（M3）。

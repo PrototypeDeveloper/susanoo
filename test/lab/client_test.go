@@ -3,20 +3,144 @@
 package lab
 
 import (
+	"bufio"
+	"bytes"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
+	"mime"
+	"net"
+	"net/http"
 	"os"
 	"os/user"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
+func init() {
+	extraHelpers["hook"] = hookServe
+	extraHelpers["smtp"] = smtpServe
+}
+
+// hookServe は偽の webhook の受け口（アドレス:ファイル）。受け取った POST の本文を、1 行ずつファイルに足す。
+func hookServe(arg string) int {
+	i := strings.LastIndex(arg, ":")
+	addr, file := arg[:i], arg[i+1:]
+	var mu sync.Mutex
+	err := http.ListenAndServe(addr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		var line bytes.Buffer
+		if json.Compact(&line, b) != nil {
+			line.Reset()
+			line.WriteString(strings.ReplaceAll(string(b), "\n", " "))
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if f, err := os.OpenFile(file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+			f.Write(append(line.Bytes(), '\n'))
+			f.Close()
+		}
+	}))
+	fmt.Fprintln(os.Stderr, err)
+	return 1
+}
+
+// smtpServe は偽の SMTP サーバー（アドレス:ファイル）。受け取ったメールの題名（RFC 2047 を戻したもの）と本文（base64 を戻したもの）を
+// ファイルに足す。STARTTLS と認証は扱わない。
+func smtpServe(arg string) int {
+	i := strings.LastIndex(arg, ":")
+	addr, file := arg[:i], arg[i+1:]
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	var mu sync.Mutex
+	for {
+		c, err := ln.Accept()
+		if err != nil {
+			return 1
+		}
+		go func() {
+			defer c.Close()
+			r := bufio.NewReader(c)
+			reply := func(s string) { io.WriteString(c, s+"\r\n") }
+			reply("220 lab ESMTP")
+			for {
+				line, err := r.ReadString('\n')
+				if err != nil {
+					return
+				}
+				switch cmd := strings.ToUpper(strings.TrimSpace(line)); {
+				case strings.HasPrefix(cmd, "EHLO"):
+					reply("250-lab")
+					reply("250 8BITMIME")
+				case cmd == "DATA":
+					reply("354 go")
+					var msg strings.Builder
+					for {
+						l, err := r.ReadString('\n')
+						if err != nil || l == ".\r\n" {
+							break
+						}
+						msg.WriteString(l)
+					}
+					head, body, _ := strings.Cut(msg.String(), "\r\n\r\n")
+					var out strings.Builder
+					for _, h := range strings.Split(head, "\r\n") {
+						if v, ok := strings.CutPrefix(h, "Subject: "); ok {
+							subject, _ := new(mime.WordDecoder).DecodeHeader(v)
+							out.WriteString("Subject: " + subject + "\n")
+						}
+					}
+					text, _ := base64.StdEncoding.DecodeString(strings.ReplaceAll(body, "\r\n", ""))
+					out.WriteString(strings.ReplaceAll(string(text), "\r\n", "\n") + "\n----\n")
+					mu.Lock()
+					if f, err := os.OpenFile(file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600); err == nil {
+						f.WriteString(out.String())
+						f.Close()
+					}
+					mu.Unlock()
+					reply("250 queued")
+				case cmd == "QUIT":
+					reply("221 bye")
+					return
+				default:
+					reply("250 ok")
+				}
+			}
+		}()
+	}
+}
+
+// fileHas は、ファイルがすべての文字列を含む行（区切りが sep のまとまり）を持つかを返す。
+func fileHas(path, sep string, parts ...string) bool {
+	data, _ := os.ReadFile(path)
+	for _, chunk := range strings.Split(string(data), sep) {
+		ok := chunk != ""
+		for _, p := range parts {
+			if !strings.Contains(chunk, p) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
+}
+
 // TestClient は CLIENT の権限の分離と自己防御（C10）、監視（C1、C2、C3）、永続化の場所の変更と認証情報の読み取りの検知（C4、C8）、
 // AI エージェントの帰属（C9）、既定の条件のルールによる検知（C8 の連続する列挙、C9 のエージェントの操作）、大量の変更による隔離、
+// 隔離の通知（M7。Slack の形の webhook とメールを、疑似インターネットの偽の受け口で受ける）、証拠の保全（C11）、
 // おとりの削除の検知（C5）、証明書の更新（M1）を確かめる。
 func TestClient(t *testing.T) {
 	if *susanooBin == "" {
@@ -26,7 +150,19 @@ func TestClient(t *testing.T) {
 	l := &lab{t: t, dir: t.TempDir()}
 	buildTopology(t, []*machine{pc})
 	l.init()
-	l.writeGW([]map[string]any{{"name": "default", "egress": map[string]any{"default": "allow"}, "isolation": "management"}}, nil)
+	hookLog, mailLog := filepath.Join(l.dir, "hook.log"), filepath.Join(l.dir, "mail.log")
+	l.writeGW([]map[string]any{{"name": "default", "egress": map[string]any{"default": "allow"}, "isolation": "management"}}, map[string]any{
+		"notify": map[string]any{"destinations": []map[string]any{
+			{"name": "chat", "type": "slack", "url": "http://203.0.113.2:9091/services/T000/B000/lab"},
+			{"name": "mail", "type": "email", "email": map[string]any{
+				"server": "203.0.113.2:2525", "tls": "none", "from": "susanoo@example.jp", "to": []string{"admin@example.jp"},
+			}},
+		}},
+	})
+	authLog := filepath.Join(l.dir, "auth.log")
+	if err := os.WriteFile(authLog, []byte("Oct 19 10:00:00 pc-001 sshd[100]: susanoo-lab-log-line from 192.0.2.10\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	watched := filepath.Join(l.dir, "watched")
 	persist := filepath.Join(l.dir, "systemd")
@@ -53,6 +189,7 @@ func TestClient(t *testing.T) {
 			"protect":   []string{protected}, "mass_files": 50, "mass_window": "10s",
 		},
 		"honeytokens": []map[string]any{{"path": decoy, "kind": "aws"}},
+		"evidence":    map[string]any{"logs": []string{authLog}},
 	})
 
 	self, err := os.Executable()
@@ -60,6 +197,8 @@ func TestClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	start(t, "試験用サーバー", nsInet, []string{helperEnv + "=sink:203.0.113.2:9090"}, self)
+	start(t, "通知の受け口（webhook）", nsInet, []string{helperEnv + "=hook:203.0.113.2:9091:" + hookLog}, self)
+	start(t, "通知の受け口（メール）", nsInet, []string{helperEnv + "=smtp:203.0.113.2:2525:" + mailLog}, self)
 	start(t, "GW", nsGW, nil, *susanooBin, "gw", "-config", filepath.Join(l.dir, "gw.json"))
 	waitFor(t, "GW の起動", 10*time.Second, func() bool { return l.devices() != nil })
 	l.dhcp(pc)
@@ -67,7 +206,7 @@ func TestClient(t *testing.T) {
 	waitFor(t, "端末の登録と機能の申告", 15*time.Second, func() bool {
 		f := l.devices()[pc.id].Features
 		return slices.Contains(f, "process_events") && slices.Contains(f, "network_events") && slices.Contains(f, "file_events") &&
-			slices.Contains(f, "kernel_modules") && slices.Contains(f, "isolation")
+			slices.Contains(f, "kernel_modules") && slices.Contains(f, "isolation") && slices.Contains(f, "evidence")
 	})
 
 	t.Log("段階1: CLIENT は権限を分けて動く。執行部は必要な capability だけを持ち、解析部は非特権の利用者で capability を持たない")
@@ -176,7 +315,83 @@ func TestClient(t *testing.T) {
 		return d.Isolation == "management" && d.Reason == "短時間の大量変更" && d.Applied == "management"
 	})
 
-	t.Log("段階10: 隔離中に端末側の遮断のルールを消すと、入れ直され、改ざんが記録される")
+	t.Log("段階10: 隔離は Slack の形の webhook とメールで通知される")
+	waitFor(t, "webhook の通知", 15*time.Second, func() bool {
+		return fileHas(hookLog, "\n", `"text"`, "端末 pc-001 を隔離しました", "短時間の大量変更")
+	})
+	waitFor(t, "メールの通知", 15*time.Second, func() bool {
+		return fileHas(mailLog, "----", "Subject: [susanoo] 端末 pc-001 を隔離しました", "理由: 短時間の大量変更")
+	})
+
+	t.Log("段階11: 隔離された端末は証拠（プロセス、接続、ログ）を集めて署名し、CONTROLLER が受け取って監査ログにハッシュを残す")
+	type evidenceInfo struct {
+		ID, Reason, SHA256           string
+		Processes, Connections, Logs int
+	}
+	evidence := func() []evidenceInfo {
+		var list []evidenceInfo
+		l.ctlJSON(&list, "evidence", "list", "-device", pc.id)
+		return list
+	}
+	waitFor(t, "隔離の証拠", 20*time.Second, func() bool {
+		list := evidence()
+		return len(list) == 1 && list[0].Reason == "isolation"
+	})
+	first := evidence()[0]
+	var ev struct {
+		DeviceID string `json:"device_id"`
+		Snapshot struct {
+			Processes []struct {
+				CmdLine string `json:"cmd_line"`
+			} `json:"processes"`
+			Connections []struct {
+				Remote, Process string
+			} `json:"connections"`
+			Logs []struct {
+				Path  string
+				Lines []string
+			} `json:"logs"`
+		} `json:"snapshot"`
+	}
+	if !l.ctlJSON(&ev, "evidence", "show", pc.id, first.ID) {
+		t.Fatal("ctl evidence show に失敗しました")
+	}
+	s := ev.Snapshot
+	if ev.DeviceID != pc.id || !slices.ContainsFunc(s.Processes, func(p struct {
+		CmdLine string `json:"cmd_line"`
+	}) bool {
+		return strings.Contains(p.CmdLine, "client -config")
+	}) {
+		t.Errorf("証拠のプロセスに CLIENT がありません（%d 件）", len(s.Processes))
+	}
+	if !slices.ContainsFunc(s.Connections, func(c struct{ Remote, Process string }) bool { return c.Remote == controllerAddr }) {
+		t.Errorf("証拠の接続に CONTROLLER への管理通信がありません: %+v", s.Connections)
+	}
+	if len(s.Logs) != 1 || s.Logs[0].Path != authLog || !slices.ContainsFunc(s.Logs[0].Lines, func(x string) bool { return strings.Contains(x, "susanoo-lab-log-line") }) {
+		t.Errorf("証拠のログ = %+v", s.Logs)
+	}
+	if actions := l.auditActions(); !slices.Contains(actions, "evidence.receive:"+pc.id) {
+		t.Errorf("監査ログに evidence.receive:%s がありません: %v", pc.id, actions)
+	}
+
+	t.Log("段階12: 管理者が求めると、隔離を変えずに証拠を集め直す。試験の通知はすべての宛先に届く")
+	sh(t, "ip", "netns", "exec", nsGW, *susanooBin, "ctl", "evidence", "collect", pc.id, "-dir", l.ctrlDir, "-server", controllerAddr)
+	waitFor(t, "求めた証拠", 20*time.Second, func() bool {
+		list := evidence()
+		return len(list) == 2 && list[0].Reason == "request" && list[0].ID != first.ID
+	})
+	if d := l.devices()[pc.id]; d.Isolation != "management" || d.Applied != "management" {
+		t.Errorf("証拠を求めた後の隔離 = %+v", d)
+	}
+	var results []struct{ Name, Error string }
+	if !l.ctlJSON(&results, "notify", "test") || len(results) != 2 || results[0].Error != "" || results[1].Error != "" {
+		t.Errorf("試験の通知 = %+v", results)
+	}
+	waitFor(t, "試験の通知", 10*time.Second, func() bool {
+		return fileHas(hookLog, "\n", "試験の通知") && fileHas(mailLog, "----", "Subject: [susanoo] susanoo の試験の通知")
+	})
+
+	t.Log("段階13: 隔離中に端末側の遮断のルールを消すと、入れ直され、改ざんが記録される")
 	sh(t, "ip", "netns", "exec", pc.ns, "nft", "delete", "table", "inet", "susanoo_client")
 	waitFor(t, "自己隔離のルールの入れ直し", 10*time.Second, func() bool {
 		return inNS(pc.ns, "nft", "list", "table", "inet", "susanoo_client").Run() == nil
@@ -185,7 +400,7 @@ func TestClient(t *testing.T) {
 		return eventLine(l.events(), `"tamper"`)
 	})
 
-	t.Log("段階11: おとりを消すと、消したプロセスとともに記録される")
+	t.Log("段階14: おとりを消すと、消したプロセスとともに記録される")
 	if err := os.Remove(decoy); err != nil { // すぐ終わるプロセスは名前を取れないことがあるので、試験のプロセスが消す
 		t.Fatal(err)
 	}
@@ -193,7 +408,7 @@ func TestClient(t *testing.T) {
 		return eventLine(l.events(), `"operation":"delete"`, `"name":"lab.test"`)
 	})
 
-	t.Log("段階12: 有効期間の短い証明書は、CLIENT が CONTROLLER に頼んで更新し、新しい証明書で通信を続ける")
+	t.Log("段階15: 有効期間の短い証明書は、CLIENT が CONTROLLER に頼んで更新し、新しい証明書で通信を続ける")
 	farFuture := time.Now().Add(80 * 24 * time.Hour)
 	waitFor(t, "証明書の更新", 40*time.Second, func() bool {
 		return l.devices()[pc.id].CertExpiry.After(farFuture)

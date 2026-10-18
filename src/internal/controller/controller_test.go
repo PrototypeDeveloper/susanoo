@@ -24,6 +24,7 @@ import (
 	"susanoo/internal/audit"
 	"susanoo/internal/event"
 	"susanoo/internal/honeytoken"
+	"susanoo/internal/notify"
 	"susanoo/internal/pki"
 	"susanoo/internal/pki/pkitest"
 	"susanoo/internal/policy"
@@ -150,12 +151,19 @@ func startWith(t *testing.T, env *pkitest.Env, dir string, pol *policy.Policy, l
 // startFull は、GW の LAN と、端末の証明書の発行（issuer が nil でなければ）とともに CONTROLLER を起動する。
 func startFull(t *testing.T, env *pkitest.Env, dir string, pol *policy.Policy, lan *fakeLAN, issuer Issuer) *fixture {
 	t.Helper()
+	return startNotify(t, env, dir, pol, lan, issuer, nil)
+}
+
+// startNotify は startFull と同じだが、通知の送り手 n（nil なら通知しない）を使う。
+func startNotify(t *testing.T, env *pkitest.Env, dir string, pol *policy.Policy, lan *fakeLAN, issuer Issuer, n *notify.Notifier) *fixture {
+	t.Helper()
 	f := &fixture{t: t, env: env, dir: dir, enf: &fakeEnforcer{}, lan: lan, clock: &clock{t: time.Date(2026, 10, 18, 12, 0, 0, 0, time.UTC)}}
 	var l LAN
 	if lan != nil {
 		l = lan
 	}
 	ctrl, err := New(Config{
+		Notifier:         n,
 		LAN:              l,
 		Dir:              dir,
 		CA:               env.CA.Pool(),

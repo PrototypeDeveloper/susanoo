@@ -69,6 +69,7 @@ type Config struct {
 	KernelModules bool               // カーネルモジュールの読み込みを検知する
 	ModulePoll    time.Duration      // カーネルモジュールの一覧を読む間隔。既定 10 秒
 	Agents        []AgentSpec        // 見分ける AI エージェント。nil なら DefaultAgents、空なら見分けない
+	EvidenceLogs  []string           // 証拠として末尾を集めるログ。nil なら DefaultEvidenceLogs、空なら集めない
 	Logger        *slog.Logger
 	Now           func() time.Time
 }
@@ -148,8 +149,15 @@ func New(cfg Config) *Platform {
 	if cfg.NFT != nil && os.Geteuid() == 0 {
 		p.caps.Features = append(p.caps.Features, platform.CapIsolation)
 	}
+	if err := evidenceLogsValid(cfg.EvidenceLogs); err != nil {
+		cfg.Logger.Warn(err.Error())
+	} else {
+		p.caps.Features = append(p.caps.Features, platform.CapEvidence)
+	}
 	return p
 }
+
+var _ platform.Collector = (*Platform)(nil)
 
 func (p *Platform) paths() []string {
 	paths := make([]string, len(p.cfg.Tokens))

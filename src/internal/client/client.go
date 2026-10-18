@@ -130,6 +130,7 @@ func (a *Agent) Run(ctx context.Context) error {
 			}
 			a.flush(ctx)
 			a.heartbeat(ctx)
+			a.sendEvidence(ctx)
 			a.renewIfDue(ctx)
 		case err := <-watchErr:
 			if ctx.Err() != nil || errors.Is(err, ErrExecutorStopped) {
@@ -204,6 +205,54 @@ func (a *Agent) heartbeat(ctx context.Context) {
 	a.apply(ctx, d)
 }
 
+// evidencePerTick は、ハートビートの間隔ごとに送る証拠の数の上限（大きいので、ほかの送信を長く待たせない）。
+const evidencePerTick = 2
+
+// sendEvidence は、執行部が保存した証拠を CONTROLLER に送り、受け取られたら執行部に知らせる（C11）。
+// CONTROLLER が中身を理由に受け付けなかった証拠（4xx）は、送り直しても受け付けられないので、受け取られたものとして先に進む
+// （端末には控えが残る）。
+func (a *Agent) sendEvidence(ctx context.Context) {
+	if a.offline {
+		return
+	}
+	for range evidencePerTick {
+		id, env, ok, err := a.cfg.Executor.NextEvidence(ctx)
+		if err != nil {
+			a.log.Error("執行部から証拠を受け取れません", "エラー", err)
+			return
+		}
+		if !ok {
+			return
+		}
+		var d api.Desired
+		err = a.post(ctx, api.PathEvidence, api.EvidenceUpload{Envelope: env}, &d)
+		var he *httpError
+		switch {
+		case errors.As(err, &he) && he.status/100 == 4 && he.status != http.StatusForbidden:
+			a.log.Error("CONTROLLER が証拠を受け付けません。端末に控えを残して、次の証拠に進みます", "ID", id, "エラー", err)
+		case err != nil:
+			a.sent("証拠", err)
+			return
+		default:
+			a.sent("証拠", nil)
+			a.log.Info("証拠を CONTROLLER に送りました", "ID", id)
+			a.apply(ctx, d)
+		}
+		if err := a.cfg.Executor.AckEvidence(ctx, id); err != nil {
+			a.log.Error("証拠を送ったことを記録できません", "ID", id, "エラー", err)
+			return
+		}
+	}
+}
+
+// httpError は CONTROLLER がエラーで応答したこと。
+type httpError struct {
+	status int
+	msg    string
+}
+
+func (e *httpError) Error() string { return e.msg }
+
 // sent は CONTROLLER への送信の成否を記録する。ログは、送れなくなったときと、送れるようになったときだけ残す
 // （CONTROLLER に届かない間に、同じ警告を送るたびに出さない）。
 func (a *Agent) sent(what string, err error) {
@@ -269,7 +318,7 @@ func (a *Agent) post(ctx context.Context, path string, body, out any) error {
 	if resp.StatusCode != http.StatusOK {
 		var e api.Error
 		json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&e)
-		return fmt.Errorf("%s: %s: %s", path, resp.Status, e.Error)
+		return &httpError{status: resp.StatusCode, msg: fmt.Sprintf("%s: %s: %s", path, resp.Status, e.Error)}
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, api.MaxBodyBytes)).Decode(out)
 }

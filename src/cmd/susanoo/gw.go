@@ -34,6 +34,7 @@ import (
 	"susanoo/internal/intel"
 	"susanoo/internal/keys"
 	"susanoo/internal/nft"
+	"susanoo/internal/notify"
 	"susanoo/internal/pki"
 	"susanoo/internal/policy"
 	"susanoo/internal/privsep"
@@ -56,6 +57,7 @@ type gwConfig struct {
 	Separation       *bool           `json:"privilege_separation"` // 権限の分離（G12）。既定 true（root で動かすとき）
 	ControllerUser   string          `json:"controller_user"`      // CONTROLLER を動かす利用者。既定 susanoo-ctl
 	LANUser          string          `json:"lan_user"`             // LAN 側の処理を動かす利用者。既定 susanoo-net
+	Notify           *notify.Config  `json:"notify"`               // 管理者への通知（M7）。宛先の URL やパスワードを含むので、このファイルは root だけが読めるようにする
 }
 
 type dnsConfig struct {
@@ -119,6 +121,11 @@ func runGW(ctx context.Context, args []string, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	if cfg.Notify != nil {
+		if err := cfg.Notify.Validate(); err != nil {
+			return fail(stderr, err)
+		}
+	}
 
 	policyData, err := os.ReadFile(policyPath)
 	if err != nil {
@@ -129,6 +136,11 @@ func runGW(ctx context.Context, args []string, stderr io.Writer) int {
 		return fail(stderr, err)
 	}
 	log := newLogger(stderr)
+	if cfg.Notify != nil && len(cfg.Notify.Destinations) > 0 {
+		if fi, err := os.Stat(*path); err == nil && fi.Mode().Perm()&0o044 != 0 {
+			log.Warn("設定ファイルに通知の宛先（URL やパスワード）があるのに、ほかの利用者も読めます。chmod 600 で root だけが読めるようにしてください", "ファイル", *path)
+		}
+	}
 	// 認証局の秘密鍵は執行部だけが持ち、端末の証明書の発行と、自分の証明書の更新に使う（M1）。
 	ca, err := pki.LoadCA(pkiDir)
 	if err != nil {
@@ -1001,6 +1013,12 @@ func (c *gwController) run(ctx context.Context, started func(*controller.Control
 	if c.lan != nil {
 		ccfg.LAN = c.lan
 		ccfg.Egress = c.egress
+	}
+	if n := c.cfg.Notify; n != nil && len(n.Destinations) > 0 {
+		if ccfg.Notifier, err = notify.New(*n, notify.Options{Logger: c.log}); err != nil {
+			ln.Close()
+			return err
+		}
 	}
 	ctrl, err := controller.New(ccfg)
 	if err != nil {

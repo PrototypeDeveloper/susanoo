@@ -286,6 +286,7 @@ const (
 	FindingTypePrivilegeEscalation = "privilege_escalation" // 一般の利用者のプロセスから root の権限のプロセスが起動した（C4）
 	FindingTypeCredentialAccess    = "credential_access"    // 認証情報のファイルを、ふだん読むプログラム以外が読んだ（C8、C9）
 	FindingTypeKernelModule        = "kernel_module"        // カーネルモジュールの読み込み（C4）
+	FindingTypeEvidence            = "evidence"             // 端末の証拠を保全した（C11）。時系列に載せるための記録
 )
 
 // HasType は検知の種類に t が含まれるかどうかを返す。

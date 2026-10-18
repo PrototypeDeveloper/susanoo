@@ -95,6 +95,19 @@ func (f *Fake) Isolated() *platform.Isolation {
 	return &iso
 }
 
+// Snapshot は証拠として、決まった中身（試験用のプロセスと接続）を返す（platform.Collector）。集めた回数を数える。
+func (f *Fake) Snapshot(ctx context.Context) (*platform.Snapshot, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.history = append(f.history, "snapshot")
+	return &platform.Snapshot{
+		Processes:   []platform.SnapshotProcess{{PID: 1, Name: "init"}, {PID: 4242, PPID: 1, UID: "1000", Name: "suspicious", Exe: "/tmp/.x/run"}},
+		Connections: []platform.SnapshotConn{{Proto: "tcp", State: "established", Local: "192.0.2.10:40000", Remote: "203.0.113.9:443", PID: 4242, Process: "suspicious"}},
+	}, ctx.Err()
+}
+
+var _ platform.Collector = (*Fake)(nil)
+
 // History は受けた指示の履歴を返す。
 func (f *Fake) History() []string {
 	f.mu.Lock()

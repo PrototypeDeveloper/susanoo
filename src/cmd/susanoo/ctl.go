@@ -46,6 +46,8 @@ const ctlUsage = `使い方: susanoo ctl <操作> [オプション]
   learned  学習モードで通した名前と、遮断した名前を表示する（許可リストを作るときに使う）
   audit    監査ログの連鎖を確かめ、記録を表示する
   events   保存したイベントを検索する（例: susanoo ctl events -device pc-001 -class finding -since 24h）
+  evidence 端末の証拠（隔離のときに CLIENT が集めたもの）を一覧する、表示する、集めさせる（susanoo ctl evidence で説明を表示）
+  notify   試験の通知を送る（例: susanoo ctl notify test）
 `
 
 const defaultCtlDir = "/etc/susanoo/controller"
@@ -86,6 +88,10 @@ func runCtl(args []string, stdout, stderr io.Writer) int {
 		return ctlRules(args[1:], stdout, stderr)
 	case "intel":
 		return ctlIntel(args[1:], stdout, stderr)
+	case "evidence":
+		return ctlEvidence(args[1:], stdout, stderr)
+	case "notify":
+		return ctlNotify(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, ctlUsage)
 		return exitOK

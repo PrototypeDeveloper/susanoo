@@ -4,14 +4,18 @@ package linux
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"susanoo/internal/event"
+	"susanoo/internal/platform"
 )
 
 // privileged は root で動いているかを返す。root でない fanotify は、ほかのプロセスのイベントの PID を 0 で渡すため、
@@ -346,5 +350,85 @@ func TestInspectLineage(t *testing.T) {
 	}
 	if q, _ := c.inspect(1 << 30); q == nil || q.Name != "" {
 		t.Errorf("知らないプロセス = %+v", q)
+	}
+}
+
+// 証拠として、プロセスの一覧、ソケットと持ち主、ログの末尾を集める（root でなくても自分のプロセスの分は集まる）。
+func TestSnapshot(t *testing.T) {
+	loopbackUp(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	logPath := filepath.Join(t.TempDir(), "auth.log")
+	var b strings.Builder
+	for i := range 300 {
+		fmt.Fprintf(&b, "line %d\n", i)
+	}
+	b.WriteString("bad \xff utf8\n")
+	os.WriteFile(logPath, []byte(b.String()), 0o600)
+
+	p := New(Config{EvidenceLogs: []string{logPath, "/nonexistent/log"}, Logger: quiet})
+	if !p.Capabilities().Has(platform.CapEvidence) {
+		t.Fatal("証拠の保全を申告していない")
+	}
+	s, err := p.Snapshot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	self := slices.IndexFunc(s.Processes, func(x platform.SnapshotProcess) bool { return x.PID == os.Getpid() })
+	if self < 0 || s.Processes[self].PPID != os.Getppid() || s.Processes[self].Exe == "" || s.Processes[self].Started == 0 {
+		t.Fatalf("自分のプロセス = %+v（%d 件）", s.Processes, len(s.Processes))
+	}
+	if since := time.Since(time.UnixMilli(s.Processes[self].Started)); since < 0 || since > time.Hour {
+		t.Errorf("起動した時刻 = %v", time.UnixMilli(s.Processes[self].Started))
+	}
+	for _, x := range s.Processes {
+		if x.PID == 2 || x.PPID == 2 {
+			t.Errorf("カーネルのスレッドを含む: %+v", x)
+		}
+	}
+	listen := slices.IndexFunc(s.Connections, func(c platform.SnapshotConn) bool {
+		return c.Proto == "tcp" && c.State == "listen" && c.Local == ln.Addr().String()
+	})
+	if listen < 0 || s.Connections[listen].PID != os.Getpid() || s.Connections[listen].Remote != "" {
+		t.Errorf("待ち受け = %+v", s.Connections)
+	}
+	if len(s.Logs) != 1 || s.Logs[0].Path != logPath || len(s.Logs[0].Lines) != logTailLines || !s.Logs[0].Truncated {
+		t.Fatalf("ログ = %+v", s.Logs)
+	}
+	if last := s.Logs[0].Lines[len(s.Logs[0].Lines)-1]; last != "bad ? utf8" {
+		t.Errorf("最後の行 = %q", last)
+	}
+	if len(s.Errors) != 0 {
+		t.Errorf("エラー = %v（ないログは飛ばす）", s.Errors)
+	}
+	if New(Config{EvidenceLogs: []string{"relative.log"}, Logger: quiet}).Capabilities().Has(platform.CapEvidence) {
+		t.Error("相対パスのログを受け付けた")
+	}
+}
+
+func TestTailLog(t *testing.T) {
+	dir := t.TempDir()
+	short := filepath.Join(dir, "short.log")
+	os.WriteFile(short, []byte("a\nb\n"), 0o600)
+	l, err := tailLog(short, 10, 1024)
+	if err != nil || len(l.Lines) != 2 || l.Truncated {
+		t.Errorf("短いログ = %+v, %v", l, err)
+	}
+	big := filepath.Join(dir, "big.log")
+	os.WriteFile(big, []byte(strings.Repeat("0123456789\n", 1000)), 0o600)
+	l, _ = tailLog(big, 1000, 100) // 100 バイトだけ読む。途中から始まる最初の行は捨てる
+	if !l.Truncated || len(l.Lines) == 0 || slices.ContainsFunc(l.Lines, func(s string) bool { return s != "0123456789" }) {
+		t.Errorf("大きいログ = %+v", l)
+	}
+	empty := filepath.Join(dir, "empty.log")
+	os.WriteFile(empty, nil, 0o600)
+	if l, err := tailLog(empty, 10, 100); err != nil || l.Lines == nil || len(l.Lines) != 0 {
+		t.Errorf("空のログ = %+v, %v", l, err)
+	}
+	if _, err := tailLog(dir, 10, 100); err == nil {
+		t.Error("ディレクトリを読んだ")
 	}
 }

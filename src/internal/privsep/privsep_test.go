@@ -4,6 +4,7 @@ package privsep
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -203,6 +204,58 @@ func TestExecutorRefusesMisuse(t *testing.T) {
 	// 知らない要求には、つながりを切らずにエラーを返す。
 	if err := remote.p.call(ctx, "shell", nil, nil); err == nil || !strings.Contains(err.Error(), "知らない要求") {
 		t.Errorf("知らない要求の応答 = %v", err)
+	}
+}
+
+// 解析部は執行部が保存した証拠を受け取り、送ったことを知らせる。執行部は不正な ID を受け付けない（C11）。
+func TestEvidenceOverPrivsep(t *testing.T) {
+	env := pkitest.New(t)
+	cert := env.Leaf(t, pki.RoleClient, "pc-001")
+	fake := platformtest.New(platform.Capabilities{OS: "linux", Features: []platform.Capability{platform.CapIsolation, platform.CapEvidence}})
+	local, err := client.NewLocal(client.LocalConfig{
+		Cert: cert, CommandKey: env.Signer.PublicKey(), StateDir: t.TempDir(), Controller: netip.MustParseAddrPort("127.0.0.1:1"),
+		CheckInterval: time.Hour, Platform: fake, Logger: quiet,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ours, theirs := socketpair(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, ours, local, Hello{Controller: "127.0.0.1:1", Chain: cert.Certificate}, quiet)
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+	remote, _, err := Dial(theirs, quiet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok, err := remote.NextEvidence(ctx); ok || err != nil {
+		t.Fatalf("集める前の証拠 = %v, %v", ok, err)
+	}
+	payload, _ := json.Marshal(api.Command{DeviceID: "pc-001", Version: 3, Isolation: policy.IsolateManagement})
+	if err := remote.Apply(ctx, env.Signer.Sign(sign.PurposeCommand, payload)); err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	var envlp sign.Envelope
+	waitFor(t, "証拠", func() bool {
+		var ok bool
+		id, envlp, ok, err = remote.NextEvidence(ctx)
+		return ok && err == nil
+	})
+	v, _ := sign.NewVerifier(cert.Leaf.PublicKey.(ed25519.PublicKey))
+	if body, err := v.Verify(sign.PurposeEvidence, envlp); err != nil || !strings.Contains(string(body), id) {
+		t.Errorf("証拠の署名 = %v", err)
+	}
+	if err := remote.AckEvidence(ctx, "../state"); err == nil {
+		t.Error("不正な ID を受け付けた")
+	}
+	if err := remote.AckEvidence(ctx, id); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok, _ := remote.NextEvidence(ctx); ok {
+		t.Error("送った証拠をもう一度渡した")
 	}
 }
 

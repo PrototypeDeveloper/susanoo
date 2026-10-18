@@ -41,12 +41,18 @@ type clientConfig struct {
 	Files             *fileConfig       `json:"files"`                // ファイルの監視（C3、C4、C8、C9）。省略すると既定の場所を監視する
 	KernelModules     *bool             `json:"kernel_modules"`       // カーネルモジュールの読み込みの検知（C4）。既定 true
 	Agents            []linux.AgentSpec `json:"agents"`               // 見分ける AI エージェント（C9）。省略すると既定の一覧、空（[]）なら見分けない
+	Evidence          *evidenceConfig   `json:"evidence"`             // 証拠の保全（C11）
 	Separation        *bool             `json:"privilege_separation"` // 権限の分離（C10）。既定 true（root で動かすとき）
 	User              string            `json:"analyzer_user"`        // 解析部を動かす利用者。既定 nobody
 }
 
 // defaultAnalyzerUser は解析部を動かす既定の利用者。専用の利用者（susanoo など）を作って指定するのが望ましい。
 const defaultAnalyzerUser = "nobody"
+
+// evidenceConfig は証拠の保全の設定。
+type evidenceConfig struct {
+	Logs []string `json:"logs"` // 末尾を集めるログ（絶対パス）。省略すると既定の場所、空（[]）なら集めない
+}
 
 // fileConfig はファイルの監視の設定。各一覧は、省略すると既定の場所、空（[]）なら監視しない。
 type fileConfig struct {
@@ -138,6 +144,9 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 		KernelModules: cfg.KernelModules == nil || *cfg.KernelModules,
 		Agents:        cfg.Agents,
 		Logger:        log,
+	}
+	if cfg.Evidence != nil {
+		pcfg.EvidenceLogs = cfg.Evidence.Logs
 	}
 	if cfg.Isolation == nil || *cfg.Isolation {
 		pcfg.NFT = nft.Command{Path: cfg.NFT}

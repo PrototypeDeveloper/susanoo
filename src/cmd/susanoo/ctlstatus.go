@@ -84,6 +84,22 @@ func ctlStatus(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintf(tw, "脅威情報\tなし\n")
 	}
+	if len(st.Notify) > 0 {
+		var parts []string
+		for _, n := range st.Notify {
+			s := fmt.Sprintf("%s（%s、送信 %d、失敗 %d", n.Name, n.Type, n.Sent, n.Failed)
+			if n.Suppressed > 0 {
+				s += fmt.Sprintf("、省略 %d", n.Suppressed)
+			}
+			if n.LastError != "" && n.LastFailed.After(n.LastSent) {
+				s += "、最後の失敗: " + oneLine(n.LastError)
+			}
+			parts = append(parts, s+"）")
+		}
+		fmt.Fprintf(tw, "通知\t%s\n", strings.Join(parts, "、"))
+	} else {
+		fmt.Fprintf(tw, "通知\tなし\n")
+	}
 	tw.Flush()
 	if len(st.Risky) > 0 {
 		fmt.Fprintln(stdout, "\n危険度の高い端末と機器:")

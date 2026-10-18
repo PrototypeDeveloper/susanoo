@@ -67,6 +67,7 @@ func (c *Controller) getStatus(w http.ResponseWriter, _ *http.Request, _ pki.Ide
 		}
 	}
 	st.Risky = c.riskyLocked()
+	st.Notify = c.notifyStatus()
 	c.mu.Unlock()
 	st.Rules = c.rulesVersion()
 	st.Intel = c.intelSummary()

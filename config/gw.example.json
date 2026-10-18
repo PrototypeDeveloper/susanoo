@@ -28,5 +28,36 @@
   "flow_log": true,
   "privilege_separation": true,
   "controller_user": "susanoo-ctl",
-  "lan_user": "susanoo-net"
+  "lan_user": "susanoo-net",
+  "notify": {
+    "rate_limit": 30,
+    "destinations": [
+      {
+        "name": "chat",
+        "type": "slack",
+        "url": "https://hooks.slack.com/services/XXXXXXXX/XXXXXXXX/XXXXXXXXXXXXXXXXXXXXXXXX"
+      },
+      {
+        "name": "admin-mail",
+        "type": "email",
+        "events": ["isolate", "pending", "alert"],
+        "email": {
+          "server": "smtp.example.jp:587",
+          "tls": "starttls",
+          "username": "susanoo@example.jp",
+          "password": "change-me",
+          "from": "susanoo@example.jp",
+          "to": ["admin@example.jp"]
+        }
+      },
+      {
+        "name": "soc",
+        "type": "webhook",
+        "url": "https://soc.example.jp/hooks/susanoo",
+        "headers": {"Authorization": "Bearer change-me"},
+        "events": ["isolate", "finding"],
+        "min_severity": "high"
+      }
+    ]
+  }
 }

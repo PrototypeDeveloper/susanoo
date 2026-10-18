@@ -16,12 +16,21 @@ import (
 
 // CLIENT の解析部から執行部への要求と、執行部からの知らせ。
 const (
-	reqHeartbeat = "heartbeat"  // 署名付きのハートビートを作る
-	reqApply     = "apply"      // 署名付きの指示を適用する
-	reqSignTLS   = "sign_tls"   // TLS 1.3 のクライアント認証の署名を作る
-	reqRenewCert = "renew_cert" // 更新した証明書を確かめて保存する
-	noticeEvent  = "event"      // 検知したイベント
+	reqHeartbeat    = "heartbeat"     // 署名付きのハートビートを作る
+	reqApply        = "apply"         // 署名付きの指示を適用する
+	reqSignTLS      = "sign_tls"      // TLS 1.3 のクライアント認証の署名を作る
+	reqRenewCert    = "renew_cert"    // 更新した証明書を確かめて保存する
+	reqEvidenceNext = "evidence_next" // 送っていない証拠を受け取る
+	reqEvidenceAck  = "evidence_ack"  // 証拠が CONTROLLER に受け取られたことを知らせる
+	noticeEvent     = "event"         // 検知したイベント
 )
+
+// evidenceItem は reqEvidenceNext の応答。
+type evidenceItem struct {
+	OK       bool          `json:"ok"`
+	ID       string        `json:"id,omitempty"`
+	Envelope sign.Envelope `json:"envelope,omitzero"`
+}
 
 // Serve は CLIENT の執行部の側。解析部に hello を送り、ex が検知したイベントを送りながら、
 // 解析部の要求に 1 つずつ応える。ctx が終わると nil を、解析部とのつながりが切れると ErrAnalyzerStopped を返す。
@@ -98,6 +107,15 @@ func handleClient(ctx context.Context, ex client.Executor, typ string, body json
 			return nil, err
 		}
 		return nil, ex.RenewCert(ctx, der)
+	case reqEvidenceNext:
+		id, env, ok, err := ex.NextEvidence(ctx)
+		return evidenceItem{OK: ok, ID: id, Envelope: env}, err
+	case reqEvidenceAck:
+		var id string
+		if err := decodeBody(body, &id); err != nil {
+			return nil, err
+		}
+		return nil, ex.AckEvidence(ctx, id) // ID の形は執行部が確かめる
 	}
 	return nil, fmt.Errorf("知らない要求 %q です", typ)
 }
@@ -185,6 +203,16 @@ func (r *Remote) SignTLS(ctx context.Context, message []byte) ([]byte, error) {
 
 func (r *Remote) RenewCert(ctx context.Context, der []byte) error {
 	return r.p.call(ctx, reqRenewCert, der, nil)
+}
+
+func (r *Remote) NextEvidence(ctx context.Context) (string, sign.Envelope, bool, error) {
+	var it evidenceItem
+	err := r.p.call(ctx, reqEvidenceNext, nil, &it)
+	return it.ID, it.Envelope, it.OK, err
+}
+
+func (r *Remote) AckEvidence(ctx context.Context, id string) error {
+	return r.p.call(ctx, reqEvidenceAck, id, nil)
 }
 
 // Watch は執行部から届いたイベントを out に送る。

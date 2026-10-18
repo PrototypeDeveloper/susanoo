@@ -57,6 +57,9 @@
     "mass_window": "30s"
   },
   "kernel_modules": true,
+  "evidence": {
+    "logs": ["/var/log/auth.log", "/var/log/syslog", "/var/log/kern.log"]
+  },
   "agents": [
     {"name": "claude", "match": ["claude", "@anthropic-ai/claude-code/"]},
     {"name": "codex", "match": ["codex", "@openai/codex/"]}

@@ -203,8 +203,10 @@ func (c *Controller) analyze(e *event.Event, s subject) {
 	}
 
 	var (
-		reason string
-		fire   bool
+		reason    string
+		fire      bool
+		score, th int
+		notifySev event.Severity
 	)
 	c.mu.Lock()
 	points, top := 0, (*rules.Rule)(nil)
@@ -236,11 +238,15 @@ func (c *Controller) analyze(e *event.Event, s subject) {
 			if top == nil || r.Score > top.Score {
 				top = r
 			}
+			sev := e.SeverityID
+			if r.Finding == "" {
+				sev = r.FindingSeverity()
+			}
+			notifySev = max(notifySev, sev)
 		}
 	}
 	if top != nil {
-		th := c.groupLocked(t.group, t.canary).Threshold()
-		score := 0
+		th = c.groupLocked(t.group, t.canary).Threshold()
 		if t.key != "" {
 			score = roundScore(c.addRiskLocked(t.key, points, ids, now, eng.HalfLife))
 		}
@@ -263,6 +269,9 @@ func (c *Controller) analyze(e *event.Event, s subject) {
 		}
 	}
 	if !fire {
+		if top != nil {
+			c.notifyFinding(t, top.Name, notifySev, e, score, th)
+		}
 		return
 	}
 	if t.device != "" {

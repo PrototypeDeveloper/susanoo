@@ -23,6 +23,7 @@ const (
 	PurposeIntel     Purpose = "intel"     // 脅威情報（G7）
 	PurposeCommand   Purpose = "command"   // 隔離や解除の命令（M6）
 	PurposeHeartbeat Purpose = "heartbeat" // ハートビート（G10、C10）
+	PurposeEvidence  Purpose = "evidence"  // 端末が集めた証拠（C11）
 )
 
 // domain は署名の対象の先頭に付ける文字列。ほかの仕組みの署名と取り違えないようにする。

@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,10 @@ type Executor interface {
 	RenewCert(ctx context.Context, der []byte) error
 	// Watch は検知したイベントを out に送り続け、ctx が終わったら返る。
 	Watch(ctx context.Context, out chan<- event.Event) error
+	// NextEvidence は、まだ CONTROLLER に受け取られていない最も古い証拠（署名付き）と、その ID を返す（C11）。
+	NextEvidence(ctx context.Context) (id string, env sign.Envelope, ok bool, err error)
+	// AckEvidence は、証拠 id が CONTROLLER に受け取られたことを記録する。
+	AckEvidence(ctx context.Context, id string) error
 }
 
 // ErrExecutorStopped は、別のプロセスの執行部とのつながりが切れたことを表す。解析部はこれを受け取ったら止まる。
@@ -67,8 +72,10 @@ type LocalConfig struct {
 // state は適用した指示。
 type state struct {
 	Version   uint64                `json:"version"`
-	Isolation policy.IsolationLevel `json:"isolation,omitempty"`
+	Isolation policy.IsolationLevel `json:"isolation,omitempty"` // 適用した自己隔離
 	Updates   []netip.Prefix        `json:"updates,omitempty"`
+	Commanded policy.IsolationLevel `json:"commanded,omitempty"` // 指示された隔離（自己隔離を使えない端末でも記録する。証拠を集めるきっかけの判断に使う）
+	Evidence  uint64                `json:"evidence,omitempty"`  // 応えた証拠の要求の番号
 }
 
 // Local は同じプロセスで動く執行部。
@@ -86,6 +93,9 @@ type Local struct {
 	mu      sync.Mutex // 状態と自己隔離の操作を守る
 	state   state
 	counter uint64
+
+	collectMu sync.Mutex // 証拠は 1 つずつ集める
+	fileMu    sync.Mutex // 証拠のファイルを守る
 }
 
 var _ Executor = (*Local)(nil)
@@ -126,6 +136,9 @@ func NewLocal(cfg LocalConfig) (*Local, error) {
 	st, err := loadState(statePath(cfg.StateDir))
 	if err != nil {
 		return nil, err
+	}
+	if st.Commanded == "" {
+		st.Commanded = st.Isolation // 証拠の保全より前の状態ファイル
 	}
 	hostname, _ := os.Hostname()
 	return &Local{
@@ -194,21 +207,33 @@ func (l *Local) Apply(ctx context.Context, env sign.Envelope) error {
 	if cmd.Version <= l.state.Version {
 		return nil
 	}
-	next := state{Version: cmd.Version, Isolation: cmd.Isolation, Updates: cmd.Updates}
+	prev := l.state
+	// 証拠は、隔離されたときと、管理者が求めたときに集める（C11）。
+	collect := ""
+	switch {
+	case cmd.Isolation != "" && prev.Commanded == "":
+		collect = api.EvidenceReasonIsolation
+	case cmd.Evidence > prev.Evidence:
+		collect = api.EvidenceReasonRequest
+	}
+	next := state{Version: cmd.Version, Isolation: cmd.Isolation, Updates: cmd.Updates, Commanded: cmd.Isolation, Evidence: max(prev.Evidence, cmd.Evidence)}
 	if !l.cfg.Platform.Capabilities().Has(platform.CapIsolation) {
 		// 自己隔離を使えない端末は、GW の遮断だけで隔離される。指示の版数だけを記録する。
-		l.state = state{Version: cmd.Version}
+		l.state = state{Version: cmd.Version, Commanded: next.Commanded, Evidence: next.Evidence}
 		l.save()
-		if cmd.Isolation != "" {
+		if cmd.Isolation != "" && prev.Commanded == "" {
 			l.log.Warn("この端末では自己隔離を使えません。GW の遮断で隔離されます", "段階", cmd.Isolation)
 		}
+		l.startCollect(collect, cmd.Version, cmd.Isolation)
 		return nil
 	}
-	prev := l.state
 	l.state = next
-	if cmd.Isolation == "" {
+	changed := cmd.Isolation != prev.Isolation || !slices.Equal(cmd.Updates, prev.Updates)
+	switch {
+	case !changed: // 隔離は変わらない（証拠の要求など）
+	case cmd.Isolation == "":
 		err = l.cfg.Platform.Release(ctx)
-	} else {
+	default:
 		err = l.isolate(ctx)
 	}
 	if err != nil {
@@ -216,11 +241,14 @@ func (l *Local) Apply(ctx context.Context, env sign.Envelope) error {
 		return fmt.Errorf("指示（隔離 %q）を適用できません: %w", cmd.Isolation, err)
 	}
 	l.save()
-	if cmd.Isolation == "" {
+	switch {
+	case !changed:
+	case cmd.Isolation == "":
 		l.log.Info("指示に従って、隔離を解除しました")
-	} else {
+	default:
 		l.log.Warn("指示に従って、自己隔離しました", "段階", cmd.Isolation)
 	}
+	l.startCollect(collect, cmd.Version, cmd.Isolation)
 	return nil
 }
 
