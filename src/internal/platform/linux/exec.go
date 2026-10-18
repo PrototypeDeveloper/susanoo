@@ -25,6 +25,7 @@ import (
 // CAP_SYS_ADMIN が必要。
 
 const (
+	maxHashing       = 4                     // 同時に計算する実行ファイルのハッシュの数
 	execInfoDelay    = 30 * time.Millisecond // execve が新しいプロセスの情報に切り替わるのを待つ時間
 	exitPoll         = 2 * time.Second
 	maxTracked       = 10000
@@ -48,6 +49,7 @@ type tracked struct {
 type execMonitor struct {
 	f       *os.File
 	hasher  *hasher
+	hashing chan struct{} // 同時に計算するハッシュの数を抑える
 	self    int
 	limiter *limiter
 	log     *slog.Logger
@@ -128,7 +130,7 @@ func newExecMonitor(procs *procCache, agents *agentMatcher, log *slog.Logger) (*
 		return nil, errors.New("fanotify: 実行を監視できるファイルシステムがありません")
 	}
 	return &execMonitor{
-		f: os.NewFile(uintptr(fd), "fanotify-exec"), hasher: newHasher(), self: os.Getpid(),
+		f: os.NewFile(uintptr(fd), "fanotify-exec"), hasher: newHasher(), hashing: make(chan struct{}, maxHashing), self: os.Getpid(),
 		limiter: newLimiter(100, 500), log: log, procs: procs, agents: agents, tracked: map[int]tracked{}, escalations: map[int]time.Time{},
 	}, nil
 }
@@ -157,9 +159,18 @@ func (m *execMonitor) run(ctx context.Context, emit func(*event.Event)) error {
 				syscall.Close(int(ev.fd))
 				continue
 			}
-			sum := m.hasher.hashFD(int(ev.fd))
-			syscall.Close(int(ev.fd))
-			go m.launched(ctx, pid, path, sum, emit)
+			// 実 UID と親は exec で変わらない。すぐ終わるプロセス（数ミリ秒で終わり、親がすぐ回収する）のために、
+			// イベントを読んだらほかの処理より先に読む。ハッシュの計算はここでは行わない（大きな実行ファイルのハッシュで、
+			// 後に続くイベントの読み取りが遅れないように）。
+			var st execStatus
+			if pid > 0 {
+				st.uid, st.ppid = readStatus(procPath(pid, "status"))
+			}
+			if st.ppid != 0 && st.ppid == m.self {
+				syscall.Close(int(ev.fd)) // 自分が実行した nft など
+				continue
+			}
+			go m.launched(ctx, pid, path, int(ev.fd), st, emit)
 		}
 		if perr != nil {
 			return perr
@@ -167,12 +178,33 @@ func (m *execMonitor) run(ctx context.Context, emit func(*event.Event)) error {
 	}
 }
 
-// launched は、execve が終わるのを少し待ってからプロセスの情報を集めて記録する。プロセスの祖先から、
-// 系譜（process.lineage）、AI エージェントの帰属（unmapped.agent）、権限昇格（一般の利用者のプロセスから root の権限で
-// 起動したこと）も調べる。
-func (m *execMonitor) launched(ctx context.Context, pid int, path, sum string, emit func(*event.Event)) {
+// execStatus は、イベントを読んだ直後に読んだプロセスの実 UID と親。
+type execStatus struct {
+	uid  string
+	ppid int
+}
+
+// launched は、実行ファイル（fd。ここで閉じる）のハッシュを計算し、execve が終わるのを少し待ってからプロセスの情報を集めて記録する。
+// プロセスの祖先から、系譜（process.lineage）、AI エージェントの帰属（unmapped.agent）、権限昇格（一般の利用者のプロセスから
+// root の権限で起動したこと）も調べる。プロセスがもう終わっていれば、st（イベントを読んだ直後に読んだ実 UID と親）から補う。
+func (m *execMonitor) launched(ctx context.Context, pid int, path string, fd int, st execStatus, emit func(*event.Event)) {
+	timer := time.NewTimer(execInfoDelay)
+	defer timer.Stop()
+	// 祖先は親から辿る（親はふつう子より長く動いているので、子が終わっていても辿れる）。コマンドラインと comm は exec が
+	// 終わるまで実行前のものなので、待ってから読む。
+	early := ancestryFrom(pid, st.ppid)
+	sum := ""
+	if fd >= 0 {
+		select {
+		case m.hashing <- struct{}{}:
+			sum = m.hasher.hashFD(fd)
+			<-m.hashing
+		case <-ctx.Done():
+		}
+		syscall.Close(fd)
+	}
 	select {
-	case <-time.After(execInfoDelay):
+	case <-timer.C:
 	case <-ctx.Done():
 		return
 	}
@@ -199,6 +231,18 @@ func (m *execMonitor) launched(ctx context.Context, pid int, path, sum string, e
 	p.File = &event.File{Name: filepath.Base(path), Path: path}
 	if sum != "" {
 		p.File.Hashes = []event.Fingerprint{{AlgorithmID: event.HashSHA256, Value: sum}}
+	}
+	if p.Name == "" {
+		// プロセスはもう終わっている。名前は実行ファイルから、利用者と祖先は先に読んだものから補う
+		// （sudo id のような短い命令でも、帰属と権限昇格を判断できるように）。
+		p.Name = commOf(path)
+		if p.User == nil && st.uid != "" {
+			p.User = &event.User{UID: st.uid}
+		}
+		if len(anc) == 0 && len(early) > 0 {
+			anc = early
+			applyAncestry(p, anc)
+		}
 	}
 	now := time.Now()
 	m.procs.put(pid, p, anc, now)

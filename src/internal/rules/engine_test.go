@@ -49,8 +49,11 @@ func TestEngineDefaults(t *testing.T) {
 			t.Errorf("%s = %v", typ, ids(hits))
 		}
 	}
-	if e.Relevant(dnsQuery("a.test")) || e.Relevant(finding(event.FindingTypeNewDevice)) {
-		t.Error("既定のルールが DNS や新しい機器に当てはまる")
+	if e.Relevant(dnsQuery("a.test")) {
+		t.Error("既定のルールが DNS に関係する")
+	}
+	if hits := e.Evaluate(finding(event.FindingTypeNewDevice), Subject{Key: "device:pc-001", Group: "default"}, &c, now); len(hits) != 0 {
+		t.Errorf("既定のルールが新しい機器に当てはまる: %v", ids(hits))
 	}
 }
 

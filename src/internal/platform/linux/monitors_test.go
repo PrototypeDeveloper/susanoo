@@ -281,14 +281,89 @@ func TestExecMonitorWhenPrivileged(t *testing.T) {
 		t.Fatal(err)
 	}
 	pid := cmd.Process.Pid
-	e := col.find(t, "起動", func(e *event.Event) bool {
-		return e.ActivityID == event.ProcessLaunch && e.Process.PID == pid
-	})
+	e := col.find(t, "起動", func(e *event.Event) bool { return launchOf(e) && e.Process.PID == pid })
 	if e.Process.File == nil || e.Process.File.Path != real || len(e.Process.File.Hashes) != 1 || !strings.Contains(e.Process.CmdLine, "0.5") {
 		t.Errorf("起動のイベント = %+v（ファイル %+v）", e.Process, e.Process.File)
 	}
 	cmd.Wait()
-	col.find(t, "終了", func(e *event.Event) bool { return e.ActivityID == event.ProcessTerminate && e.Process.PID == pid })
+	col.find(t, "終了", func(e *event.Event) bool {
+		return e.ClassUID == event.ClassProcessActivity && e.ActivityID == event.ProcessTerminate && e.Process.PID == pid
+	})
+}
+
+// launchOf はプロセスの起動のイベントかを返す。検知結果（FindingCreate）も activity_id が 1 なので、クラスで見分ける。
+func launchOf(e *event.Event) bool {
+	return e.ClassUID == event.ClassProcessActivity && e.ActivityID == event.ProcessLaunch && e.Process != nil
+}
+
+// すぐ終わるプロセスでも、名前（実行ファイルから）、利用者、祖先（先に読んだもの）が記録され、AI エージェントの帰属が付く。
+func TestExecMonitorShortLived(t *testing.T) {
+	m, err := newExecMonitor(newProcCache(), newAgentMatcher(DefaultAgents()), quiet)
+	if err != nil {
+		t.Skipf("プロセスの監視には root 権限が必要: %v", err)
+	}
+	m.self = -1
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var col collector
+	go m.run(ctx, col.emit)
+	go func() { <-ctx.Done(); m.close() }()
+	time.Sleep(100 * time.Millisecond)
+
+	// 名前を claude にした bash の子として、5 ミリ秒で終わる sleep を起動する（bash は「; sleep」があると fork する）。
+	// 5 ミリ秒は、イベントを読んで親を読むには足り、/proc を読む 30 ミリ秒後には終わっている長さ。
+	cmd := exec.Command("/bin/bash", "-c", `exec -a claude /bin/bash -c '/bin/sleep 0.005; /bin/sleep 0.5'`)
+	if err := cmd.Run(); err != nil {
+		t.Fatal(err)
+	}
+	sleepPath, _ := filepath.EvalSymlinks("/bin/sleep")
+	// root で動かすと、sudo（実 UID は利用者）の配下なので権限昇格の検知結果も届く。起動のイベントだけを探す。
+	// 終わったプロセスはコマンドラインを取れないので、コマンドラインが空のもの（5 ミリ秒の sleep）を探す。
+	e := col.find(t, "短命なプロセスの起動", func(e *event.Event) bool {
+		return launchOf(e) && e.Process.File != nil && e.Process.File.Path == sleepPath && e.Process.CmdLine == ""
+	})
+	p := e.Process
+	if p.Name != commOf(sleepPath) || p.User == nil || p.User.UID == "" || p.Parent == nil || p.Parent.Name != "bash" || len(p.Lineage) == 0 {
+		t.Fatalf("プロセス = %+v（親 %+v）", p, p.Parent)
+	}
+	if tag, _ := e.Unmapped["agent"].(agentTag); tag.Name != "claude" || tag.PID != p.Parent.PID {
+		t.Errorf("帰属 = %v（親 %d）", e.Unmapped, p.Parent.PID)
+	}
+}
+
+// プロセスがもう終わっていたら、イベントを読んだ直後に読んだ実 UID と親から、名前、利用者、親、系譜、帰属を補う（root は不要）。
+func TestLaunchedFallback(t *testing.T) {
+	// 名前を claude にした bash を親の役にする（「; :」で bash を残す）。
+	parent := exec.Command("/bin/bash", "-c", `exec -a claude /bin/bash -c 'sleep 3; :'`)
+	if err := parent.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { parent.Process.Kill(); parent.Wait() }()
+	time.Sleep(100 * time.Millisecond) // exec -a の後の bash に切り替わるのを待つ
+
+	m := &execMonitor{hashing: make(chan struct{}, 1), self: os.Getpid(), procs: newProcCache(), agents: newAgentMatcher(DefaultAgents()),
+		tracked: map[int]tracked{}, escalations: map[int]time.Time{}}
+	var col collector
+	gone := 1 << 30 // 存在しないプロセス（もう終わったプロセスの役）
+	m.launched(context.Background(), gone, "/usr/lib/cargo/bin/coreutils/whoami", -1, execStatus{uid: "1000", ppid: parent.Process.Pid}, col.emit)
+	if len(col.evs) != 1 {
+		t.Fatalf("イベント = %d 件", len(col.evs))
+	}
+	e := col.evs[0]
+	p := e.Process
+	if p.PID != gone || p.Name != "whoami" || p.User == nil || p.User.UID != "1000" || p.CmdLine != "" {
+		t.Errorf("プロセス = %+v", p)
+	}
+	if p.Parent == nil || p.Parent.PID != parent.Process.Pid || p.Parent.Name != "bash" || len(p.Lineage) == 0 {
+		t.Errorf("親 = %+v、系譜 = %v", p.Parent, p.Lineage)
+	}
+	if tag, _ := e.Unmapped["agent"].(agentTag); tag.Name != "claude" || tag.PID != parent.Process.Pid {
+		t.Errorf("帰属 = %v", e.Unmapped)
+	}
+	// 覚えておいた情報で、後から（ファイルの操作などで）引ける。
+	if q, _ := m.procs.inspect(gone); q == nil || q.Name != "whoami" {
+		t.Errorf("覚えた情報 = %+v", q)
+	}
 }
 
 func fidRecord(mask uint64, pid int32, handle []byte, name string) []byte {

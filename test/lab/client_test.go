@@ -16,7 +16,8 @@ import (
 )
 
 // TestClient は CLIENT の権限の分離と自己防御（C10）、監視（C1、C2、C3）、永続化の場所の変更と認証情報の読み取りの検知（C4、C8）、
-// AI エージェントの帰属（C9）、大量の変更による隔離、おとりの削除の検知（C5）、証明書の更新（M1）を確かめる。
+// AI エージェントの帰属（C9）、既定の条件のルールによる検知（C8 の連続する列挙、C9 のエージェントの操作）、大量の変更による隔離、
+// おとりの削除の検知（C5）、証明書の更新（M1）を確かめる。
 func TestClient(t *testing.T) {
 	if *susanooBin == "" {
 		t.Fatal("-susanoo で susanoo の実行ファイルを指定してください")
@@ -126,7 +127,45 @@ func TestClient(t *testing.T) {
 		return eventLine(l.events(), `"type_uid":100701`, "susanoo-agent-test", `"agent":{"name":"claude"`)
 	})
 
-	t.Log("段階8: 守る場所で短時間に大量のファイルを変更すると、端末が隔離される")
+	t.Log("段階8: 既定の条件のルール（試験運用）：連続する列挙、エージェントによる権限の操作と要注意の操作が検知結果になり、回数が数えられる")
+	if out, err := inNS(pc.ns, "/bin/sh", "-c", "for i in 1 2 3; do id; whoami; uname -a; hostname; done").CombinedOutput(); err != nil {
+		t.Fatalf("列挙の命令を実行できません: %v %s", err, out)
+	}
+	// 名前を claude にした bash の配下で、sudo と永続化の場所への書き込みを行う。sudo は root なので認証なしに動き、すぐ終わる
+	// （失敗しても起動は記録される）。エージェント役の bash は、実際の AI エージェントと同じく長く動くプロセスとして 1 秒生かす。
+	inNS(pc.ns, "/bin/bash", "-c", `exec -a claude /bin/bash -c 'sudo -n true; sleep 1'`).Run()
+	if out, err := inNS(pc.ns, "/bin/bash", "-c", `exec -a claude /bin/bash -c 'echo "@reboot /usr/local/bin/sync-notes" > `+persist+`/agent-job; sleep 1'`).CombinedOutput(); err != nil {
+		t.Fatalf("エージェントの配下の書き込みを実行できません: %v %s", err, out)
+	}
+	for _, id := range []string{"enumeration", "agent-privilege", "agent-sensitive-action"} {
+		waitFor(t, "条件のルール "+id+" の検知", 20*time.Second, func() bool {
+			return eventLine(l.events(), `"rule_match"`, `"uid":"`+id+`"`)
+		})
+	}
+	var stats struct {
+		Rules []struct {
+			ID        string `json:"id"`
+			Default   bool   `json:"default"`
+			Monitored int64  `json:"monitored"`
+		} `json:"rules"`
+	}
+	if !l.ctlJSON(&stats, "rules", "stats") {
+		t.Fatal("ctl rules stats に失敗しました")
+	}
+	for _, id := range []string{"enumeration", "agent-privilege", "agent-sensitive-action"} {
+		i := slices.IndexFunc(stats.Rules, func(r struct {
+			ID        string `json:"id"`
+			Default   bool   `json:"default"`
+			Monitored int64  `json:"monitored"`
+		}) bool {
+			return r.ID == id
+		})
+		if i < 0 || !stats.Rules[i].Default || stats.Rules[i].Monitored < 1 {
+			t.Errorf("ctl rules stats の %s = %+v（既定のルールで、試験運用の回数が 1 以上のはず）", id, stats.Rules)
+		}
+	}
+
+	t.Log("段階9: 守る場所で短時間に大量のファイルを変更すると、端末が隔離される")
 	for i := range 60 {
 		if err := os.WriteFile(filepath.Join(protected, fmt.Sprintf("doc-%02d.encrypted", i)), []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
@@ -137,7 +176,7 @@ func TestClient(t *testing.T) {
 		return d.Isolation == "management" && d.Reason == "短時間の大量変更" && d.Applied == "management"
 	})
 
-	t.Log("段階9: 隔離中に端末側の遮断のルールを消すと、入れ直され、改ざんが記録される")
+	t.Log("段階10: 隔離中に端末側の遮断のルールを消すと、入れ直され、改ざんが記録される")
 	sh(t, "ip", "netns", "exec", pc.ns, "nft", "delete", "table", "inet", "susanoo_client")
 	waitFor(t, "自己隔離のルールの入れ直し", 10*time.Second, func() bool {
 		return inNS(pc.ns, "nft", "list", "table", "inet", "susanoo_client").Run() == nil
@@ -146,7 +185,7 @@ func TestClient(t *testing.T) {
 		return eventLine(l.events(), `"tamper"`)
 	})
 
-	t.Log("段階10: おとりを消すと、消したプロセスとともに記録される")
+	t.Log("段階11: おとりを消すと、消したプロセスとともに記録される")
 	if err := os.Remove(decoy); err != nil { // すぐ終わるプロセスは名前を取れないことがあるので、試験のプロセスが消す
 		t.Fatal(err)
 	}
@@ -154,7 +193,7 @@ func TestClient(t *testing.T) {
 		return eventLine(l.events(), `"operation":"delete"`, `"name":"lab.test"`)
 	})
 
-	t.Log("段階11: 有効期間の短い証明書は、CLIENT が CONTROLLER に頼んで更新し、新しい証明書で通信を続ける")
+	t.Log("段階12: 有効期間の短い証明書は、CLIENT が CONTROLLER に頼んで更新し、新しい証明書で通信を続ける")
 	farFuture := time.Now().Add(80 * 24 * time.Hour)
 	waitFor(t, "証明書の更新", 40*time.Second, func() bool {
 		return l.devices()[pc.id].CertExpiry.After(farFuture)

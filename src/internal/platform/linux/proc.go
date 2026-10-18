@@ -54,29 +54,52 @@ func inspect(pid int) (*event.Process, []ancestor) {
 		p.User = &event.User{UID: self.uid}
 	}
 	anc := ancestry(pid)
-	if len(anc) > 0 {
-		a := anc[0]
-		p.Parent = &event.Process{PID: a.pid, Name: a.name}
-		if a.exe != "" {
-			p.Parent.File = &event.File{Name: filepath.Base(a.exe), Path: a.exe}
-		}
-		if a.uid != "" {
-			p.Parent.User = &event.User{UID: a.uid}
-		}
-		for i := len(anc) - 1; i >= 0; i-- {
-			if anc[i].exe != "" {
-				p.Lineage = append(p.Lineage, anc[i].exe)
-			}
+	applyAncestry(p, anc)
+	return p, anc
+}
+
+// applyAncestry は祖先 anc から、親（parent_process）と系譜（lineage）を p に入れる。
+func applyAncestry(p *event.Process, anc []ancestor) {
+	if len(anc) == 0 {
+		return
+	}
+	a := anc[0]
+	p.Parent = &event.Process{PID: a.pid, Name: a.name}
+	if a.exe != "" {
+		p.Parent.File = &event.File{Name: filepath.Base(a.exe), Path: a.exe}
+	}
+	if a.uid != "" {
+		p.Parent.User = &event.User{UID: a.uid}
+	}
+	p.Lineage = nil
+	for i := len(anc) - 1; i >= 0; i-- {
+		if anc[i].exe != "" {
+			p.Lineage = append(p.Lineage, anc[i].exe)
 		}
 	}
-	return p, anc
+}
+
+// commOf は実行ファイルのパスから、カーネルが付ける comm と同じ形の名前（ファイル名の先頭 15 バイト）を返す。
+// すでに終わったプロセスの名前を補うのに使う。
+func commOf(exe string) string {
+	name := filepath.Base(exe)
+	if len(name) > 15 {
+		name = name[:15]
+	}
+	return name
 }
 
 // ancestry は pid の祖先のプロセスを、親から順に返す（PID 1 とカーネルのスレッドの手前まで、maxAncestors まで）。
 func ancestry(pid int) []ancestor {
+	_, ppid := readStatus(procPath(pid, "status"))
+	return ancestryFrom(pid, ppid)
+}
+
+// ancestryFrom は、親が ppid のプロセス pid の祖先を、親から順に返す。pid がすでに終わっていても、
+// 先に読んでおいた親から辿れる。
+func ancestryFrom(pid, ppid int) []ancestor {
 	var out []ancestor
 	seen := map[int]bool{pid: true}
-	_, ppid := readStatus(procPath(pid, "status"))
 	for ppid > 1 && !seen[ppid] && len(out) < maxAncestors {
 		seen[ppid] = true
 		a := readAncestor(ppid)

@@ -104,31 +104,6 @@ type Exception struct {
 	Reason  string    `json:"reason"`          // 例外にした理由（必須。監査のため）
 }
 
-// Defaults は既定のルール。フェーズ1の検知と同じ動き（どれも 100 点で、既定のしきい値で隔離する）にする。
-// 名前は隔離の理由として台帳に載る。
-var Defaults = []Rule{
-	{ID: "honeytoken", Name: "おとりへの接触", Finding: event.FindingTypeHoneytoken, Mode: ModeEnforce, Score: 100},
-	{ID: "mass-change", Name: "短時間の大量変更", Finding: event.FindingTypeMassChange, Mode: ModeEnforce, Score: 100},
-	{ID: "gateway-spoofing", Name: "ゲートウェイのなりすまし", Finding: event.FindingTypeGatewaySpoofing, Mode: ModeEnforce, Score: 100},
-	{ID: "ip-spoofing", Name: "アドレスのなりすまし", Finding: event.FindingTypeIPSpoofing, Mode: ModeEnforce, Score: 100},
-	{ID: "heartbeat-lost", Name: "ハートビートの途絶", Finding: event.FindingTypeHeartbeatLost, Mode: ModeEnforce, Score: 100},
-	{ID: "tamper", Name: "防御の仕組みの改ざん", Finding: event.FindingTypeTamper, Mode: ModeEnforce, Score: 0}, // 記録して警告する
-	// 振る舞いの検知（G6）は誤検知が出やすいため、試験運用から始める。
-	{ID: "beacon", Name: "周期的な通信", Finding: event.FindingTypeBeacon, Mode: ModeMonitor, Score: 40},
-	{ID: "large-upload", Name: "大量の送信", Finding: event.FindingTypeLargeUpload, Mode: ModeMonitor, Score: 50},
-	{ID: "internal-scan", Name: "LAN 内のスキャン", Finding: event.FindingTypeInternalScan, Mode: ModeMonitor, Score: 60},
-	{ID: "new-destinations", Name: "新しい宛先の急増", Finding: event.FindingTypeNewDestinations, Mode: ModeMonitor, Score: 30},
-	{ID: "off-hours", Name: "時間外の通信", Finding: event.FindingTypeOffHours, Mode: ModeMonitor, Score: 20},
-	// 脅威情報（G7）。遮断の一覧は GW が止めるので、危険度による隔離は、一覧の質を確かめてから有効にする。
-	{ID: "threat-intel", Name: "脅威情報に当てはまる通信", Finding: event.FindingTypeThreatIntel, Mode: ModeMonitor, Score: 50},
-	// CLIENT の検知（2c-1）。管理者の作業やパッケージの更新でも当てはまるため、試験運用から始め、例外で平常の操作を除く。
-	{ID: "persistence", Name: "永続化の場所の変更", Finding: event.FindingTypePersistence, Mode: ModeMonitor, Score: 40},
-	{ID: "privilege-change", Name: "権限の設定の変更", Finding: event.FindingTypePrivilegeChange, Mode: ModeMonitor, Score: 40},
-	{ID: "privilege-escalation", Name: "権限昇格", Finding: event.FindingTypePrivilegeEscalation, Mode: ModeMonitor, Score: 20},
-	{ID: "credential-access", Name: "認証情報へのアクセス", Finding: event.FindingTypeCredentialAccess, Mode: ModeMonitor, Score: 50},
-	{ID: "kernel-module", Name: "カーネルモジュールの読み込み", Finding: event.FindingTypeKernelModule, Mode: ModeMonitor, Score: 30},
-}
-
 // Parse は検知ルールを読んで検証する。知らない項目は書き間違いとみなして拒否する。
 func Parse(data []byte) (*Set, error) {
 	d := json.NewDecoder(bytes.NewReader(data))
