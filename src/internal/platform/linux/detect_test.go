@@ -5,6 +5,7 @@ package linux
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -430,5 +431,22 @@ func TestTailLog(t *testing.T) {
 	}
 	if _, err := tailLog(dir, 10, 100); err == nil {
 		t.Error("ディレクトリを読んだ")
+	}
+}
+
+// fanotify の待ち行列があふれたら、黙って捨てずに、1 分に 1 回まで警告する。
+func TestOverflowLogged(t *testing.T) {
+	var buf strings.Builder
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	m := &fileMonitor{log: log, watched: map[fidKey]*watchDir{}, files: map[fidKey]sensitiveFile{}, protected: map[fidKey]string{}}
+	now := time.Now()
+	for i := range 3 {
+		if es := m.handle(fidEvent{mask: fanQOverflow}, now.Add(time.Duration(i)*time.Second)); len(es) != 0 {
+			t.Fatalf("あふれの印からイベントを作った: %+v", es)
+		}
+	}
+	m.handle(fidEvent{mask: fanQOverflow}, now.Add(2*time.Minute))
+	if n := strings.Count(buf.String(), "取りこぼしました"); n != 2 || !strings.Contains(buf.String(), "回数=3") {
+		t.Errorf("ログ = %s", buf.String())
 	}
 }

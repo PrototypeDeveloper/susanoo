@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"sync"
 	"syscall"
 	"time"
@@ -108,6 +109,30 @@ func (l *limiter) takeDropped() int {
 	n := l.dropped
 	l.dropped = 0
 	return n
+}
+
+// overflowLog は、fanotify の待ち行列があふれてイベントを取りこぼしたことを、1 分に 1 回までログに残す。
+// 取りこぼしは攻撃者が大量の操作で起こすこともできるので、黙って捨てない。
+type overflowLog struct {
+	mu    sync.Mutex
+	last  time.Time
+	count int
+}
+
+const overflowLogInterval = time.Minute
+
+// note は取りこぼしを 1 回数え、前のログから overflowLogInterval が経っていればログに残す。
+func (o *overflowLog) note(log *slog.Logger, what string, now time.Time) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.count++
+	if now.Sub(o.last) < overflowLogInterval {
+		return
+	}
+	if log != nil {
+		log.Warn(what+"のイベントがカーネルの待ち行列からあふれ、一部を取りこぼしました（大量の操作か、処理の遅れ）", "回数", o.count)
+	}
+	o.last, o.count = now, 0
 }
 
 // randomID は検知結果の ID を作る。

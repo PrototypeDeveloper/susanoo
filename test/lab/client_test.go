@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/user"
 	"path/filepath"
 	"slices"
@@ -120,6 +121,18 @@ func smtpServe(arg string) int {
 	}
 }
 
+// waitForDump は waitFor と同じだが、待ちきれなかったときに dump の結果を表示する（どこで途切れたかを調べるため）。
+func waitForDump(t *testing.T, what string, timeout time.Duration, dump func() string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s を待ちきれません。関係するイベント:\n%s", what, dump())
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+}
+
 // fileHas は、ファイルがすべての文字列を含む行（区切りが sep のまとまり）を持つかを返す。
 func fileHas(path, sep string, parts ...string) bool {
 	data, _ := os.ReadFile(path)
@@ -141,7 +154,7 @@ func fileHas(path, sep string, parts ...string) bool {
 // TestClient は CLIENT の権限の分離と自己防御（C10）、監視（C1、C2、C3）、永続化の場所の変更と認証情報の読み取りの検知（C4、C8）、
 // AI エージェントの帰属（C9）、既定の条件のルールによる検知（C8 の連続する列挙、C9 のエージェントの操作）、大量の変更による隔離、
 // 隔離の通知（M7。Slack の形の webhook とメールを、疑似インターネットの偽の受け口で受ける）、証拠の保全（C11）、
-// おとりの削除の検知（C5）、証明書の更新（M1）を確かめる。
+// インシデント対応の支援（M9）、設定のバックアップと復元（M11）、おとりの削除の検知（C5）、証明書の更新（M1）を確かめる。
 func TestClient(t *testing.T) {
 	if *susanooBin == "" {
 		t.Fatal("-susanoo で susanoo の実行ファイルを指定してください")
@@ -276,11 +289,31 @@ func TestClient(t *testing.T) {
 	if out, err := inNS(pc.ns, "/bin/bash", "-c", `exec -a claude /bin/bash -c 'echo "@reboot /usr/local/bin/sync-notes" > `+persist+`/agent-job; sleep 1'`).CombinedOutput(); err != nil {
 		t.Fatalf("エージェントの配下の書き込みを実行できません: %v %s", err, out)
 	}
-	for _, id := range []string{"enumeration", "agent-privilege", "agent-sensitive-action"} {
+	for _, id := range []string{"enumeration", "agent-privilege"} {
 		waitFor(t, "条件のルール "+id+" の検知", 20*time.Second, func() bool {
 			return eventLine(l.events(), `"rule_match"`, `"uid":"`+id+`"`)
 		})
 	}
+	// エージェントの配下の書き込みは、CLIENT が永続化の検知結果にして帰属を付け、CONTROLLER のルールに当たる。
+	// 失敗したときにどこで途切れたかが分かるよう、順に確かめ、関係するイベントを表示する。
+	dumpAgentJob := func() string {
+		var b strings.Builder
+		for _, line := range strings.Split(l.events(), "\n") {
+			if strings.Contains(line, "agent-job") || strings.Contains(line, "agent-sensitive-action") {
+				b.WriteString(line + "\n")
+			}
+		}
+		return b.String()
+	}
+	waitForDump(t, "エージェントの書き込みの永続化の検知結果（CLIENT）", 20*time.Second, dumpAgentJob, func() bool {
+		return eventLine(l.events(), `"persistence"`, "agent-job", `"class_uid":2004`)
+	})
+	waitForDump(t, "永続化の検知結果へのエージェントの帰属（CLIENT）", 5*time.Second, dumpAgentJob, func() bool {
+		return eventLine(l.events(), `"persistence"`, "agent-job", `"class_uid":2004`, `"agent":{"name":"claude"`)
+	})
+	waitForDump(t, "条件のルール agent-sensitive-action の検知（CONTROLLER）", 20*time.Second, dumpAgentJob, func() bool {
+		return eventLine(l.events(), `"rule_match"`, `"uid":"agent-sensitive-action"`)
+	})
 	var stats struct {
 		Rules []struct {
 			ID        string `json:"id"`
@@ -391,7 +424,66 @@ func TestClient(t *testing.T) {
 		return fileHas(hookLog, "\n", "試験の通知") && fileHas(mailLog, "----", "Subject: [susanoo] susanoo の試験の通知")
 	})
 
-	t.Log("段階13: 隔離中に端末側の遮断のルールを消すと、入れ直され、改ざんが記録される")
+	t.Log("段階13: 隔離でインシデントが自動で開き、切り離しと証拠の保全は済みになる。報告の期限、時系列、報告書を扱える")
+	var incidents []struct {
+		ID      string
+		Devices []string
+		Steps   []struct{ ID, Status string }
+	}
+	waitFor(t, "インシデント", 10*time.Second, func() bool {
+		incidents = nil
+		return l.ctlJSON(&incidents, "incident", "list") && len(incidents) == 1
+	})
+	inc := incidents[0]
+	steps := map[string]string{}
+	for _, s := range inc.Steps {
+		steps[s.ID] = s.Status
+	}
+	if !slices.Equal(inc.Devices, []string{pc.id}) || steps["isolate"] != "done" || steps["evidence"] != "done" || steps["release"] != "todo" {
+		t.Errorf("インシデント = %+v", inc)
+	}
+	ctlText := func(args ...string) string {
+		return sh(t, "ip", append([]string{"netns", "exec", nsGW, *susanooBin, "ctl"}, append(args, "-dir", l.ctrlDir, "-server", controllerAddr)...)...)
+	}
+	if out := ctlText("incident", "update", inc.ID, "-personal-data", "true", "-note", "lab"); !strings.Contains(out, "速報") || !strings.Contains(out, "確報") {
+		t.Errorf("報告の期限: %s", out)
+	}
+	var timeline []struct{ Source, Kind, Summary string }
+	if !l.ctlJSON(&timeline, "incident", "timeline", inc.ID) {
+		t.Fatal("ctl incident timeline に失敗しました")
+	}
+	for _, want := range [][2]string{{"event", "finding:mass_change"}, {"audit", "device.isolate"}, {"audit", "incident.open"}, {"evidence", "isolation"}} {
+		if !slices.ContainsFunc(timeline, func(e struct{ Source, Kind, Summary string }) bool { return e.Source == want[0] && e.Kind == want[1] }) {
+			t.Errorf("時系列に %v がありません: %+v", want, timeline)
+		}
+	}
+	report := filepath.Join(l.dir, "report.md")
+	ctlText("incident", "report", inc.ID, "-out", report)
+	if md, _ := os.ReadFile(report); !strings.Contains(string(md), "短時間の大量変更") || !strings.Contains(string(md), first.SHA256) {
+		t.Errorf("報告書に隔離の理由か証拠のハッシュがありません:\n%s", md)
+	}
+
+	t.Log("段階14: 動いている GW をバックアップし、別の場所に戻せる。動いている GW の設定ファイルには戻さない")
+	passFile := filepath.Join(l.dir, "backup.pass")
+	if err := os.WriteFile(passFile, []byte("lab backup passphrase\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	backupFile := filepath.Join(l.dir, "gw.backup")
+	l.susanoo("backup", "create", "-config", filepath.Join(l.dir, "gw.json"), "-out", backupFile, "-passphrase-file", passFile)
+	if out := l.susanoo("backup", "verify", "-in", backupFile, "-passphrase-file", passFile); !strings.Contains(out, "一致しました") {
+		t.Errorf("backup verify: %s", out)
+	}
+	if out, err := exec.Command(*susanooBin, "backup", "restore", "-config", filepath.Join(l.dir, "gw.json"), "-in", backupFile, "-passphrase-file", passFile, "-force").CombinedOutput(); err == nil || !strings.Contains(string(out), "動いています") {
+		t.Errorf("動いている GW の設定ファイルに戻した: %v %s", err, out)
+	}
+	restored := filepath.Join(l.dir, "restored")
+	l.susanoo("backup", "restore", "-config", filepath.Join(restored, "gw.json"), "-in", backupFile, "-passphrase-file", passFile)
+	if data, _ := os.ReadFile(filepath.Join(restored, "gw-state", "controller", "incidents.json")); !strings.Contains(string(data), inc.ID) {
+		t.Error("戻した状態にインシデントがありません")
+	}
+	l.susanoo("ctl", "audit", "-file", filepath.Join(restored, "gw-state", "controller", "audit.log"))
+
+	t.Log("段階15: 隔離中に端末側の遮断のルールを消すと、入れ直され、改ざんが記録される")
 	sh(t, "ip", "netns", "exec", pc.ns, "nft", "delete", "table", "inet", "susanoo_client")
 	waitFor(t, "自己隔離のルールの入れ直し", 10*time.Second, func() bool {
 		return inNS(pc.ns, "nft", "list", "table", "inet", "susanoo_client").Run() == nil
@@ -400,7 +492,7 @@ func TestClient(t *testing.T) {
 		return eventLine(l.events(), `"tamper"`)
 	})
 
-	t.Log("段階14: おとりを消すと、消したプロセスとともに記録される")
+	t.Log("段階16: おとりを消すと、消したプロセスとともに記録される")
 	if err := os.Remove(decoy); err != nil { // すぐ終わるプロセスは名前を取れないことがあるので、試験のプロセスが消す
 		t.Fatal(err)
 	}
@@ -408,7 +500,7 @@ func TestClient(t *testing.T) {
 		return eventLine(l.events(), `"operation":"delete"`, `"name":"lab.test"`)
 	})
 
-	t.Log("段階15: 有効期間の短い証明書は、CLIENT が CONTROLLER に頼んで更新し、新しい証明書で通信を続ける")
+	t.Log("段階17: 有効期間の短い証明書は、CLIENT が CONTROLLER に頼んで更新し、新しい証明書で通信を続ける")
 	farFuture := time.Now().Add(80 * 24 * time.Hour)
 	waitFor(t, "証明書の更新", 40*time.Second, func() bool {
 		return l.devices()[pc.id].CertExpiry.After(farFuture)

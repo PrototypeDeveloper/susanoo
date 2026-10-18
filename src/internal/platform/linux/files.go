@@ -148,6 +148,7 @@ type fileMonitor struct {
 	recent    map[string]time.Time
 	findings  map[string]time.Time
 	massOn    bool
+	overflow  overflowLog
 }
 
 func newFileMonitor(cfg FileConfig, procs *procCache, agents *agentMatcher, log *slog.Logger) (*fileMonitor, error) {
@@ -350,7 +351,11 @@ func (m *fileMonitor) remarkLoop(ctx context.Context) {
 
 // handle は 1 件のイベントを処理し、記録するイベントと検知結果を返す。
 func (m *fileMonitor) handle(ev fidEvent, now time.Time) []*event.Event {
-	if ev.pid == int32(m.self) || ev.mask&fanQOverflow != 0 {
+	if ev.mask&fanQOverflow != 0 {
+		m.overflow.note(m.log, "ファイルの監視", now)
+		return nil
+	}
+	if ev.pid == int32(m.self) {
 		return nil
 	}
 	m.mu.Lock()

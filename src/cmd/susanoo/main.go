@@ -27,6 +27,7 @@ const usage = `使い方: susanoo <モード> [オプション]
   ctl isolate  端末を隔離する
   ctl release  端末の隔離を解除する
   ctl policy   ポリシーを署名して配布する（「susanoo ctl」でほかの操作も表示する）
+  backup       GW の設定、ポリシー、鍵、状態をバックアップする、確かめる、戻す（「susanoo backup」で説明を表示する）
   version      版数を表示する
   help         この説明を表示する
 
@@ -76,6 +77,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return runClient(ctx, args[1:], stderr)
 	case "ctl":
 		return runCtl(args[1:], stdout, stderr)
+	case "backup":
+		return runBackup(args[1:], stdout, stderr)
 	case "controller":
 		fmt.Fprintln(stderr, "susanoo: CONTROLLER は今は GW に同居させて動かします。「susanoo gw」で起動してください")
 		return exitError

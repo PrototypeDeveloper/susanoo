@@ -471,8 +471,10 @@ func TestHoneytokenIsolatesAndAdminReleases(t *testing.T) {
 		t.Errorf("解除の指示 = %+v", cmd)
 	}
 	want := []string{"device.register:pc-001", "device.isolate:pc-001", "device.release:pc-001"}
-	if got := auditActions(t, f.dir); !slices.Equal(got, want) {
-		t.Errorf("監査ログ = %v, 期待値 %v", got, want)
+	// 隔離するとインシデントを自動で開く（ID は日付を含むので、別に数える）。
+	got, opened := withoutIncidentOpen(auditActions(t, f.dir))
+	if !slices.Equal(got, want) || opened != 1 {
+		t.Errorf("監査ログ = %v（インシデント %d 件）, 期待値 %v", got, opened, want)
 	}
 }
 
@@ -591,4 +593,17 @@ func TestMassChangeIsolates(t *testing.T) {
 	if cmd := pc2.command(status, body); cmd.Isolation != "" {
 		t.Errorf("改ざんの検知結果だけで隔離した: %+v", cmd)
 	}
+}
+
+// withoutIncidentOpen は監査ログの操作から、インシデントを開いた記録を除き、その数を返す。
+func withoutIncidentOpen(actions []string) ([]string, int) {
+	n := 0
+	out := slices.DeleteFunc(actions, func(a string) bool {
+		if strings.HasPrefix(a, ActionIncidentOpen+":INC-") {
+			n++
+			return true
+		}
+		return false
+	})
+	return out, n
 }

@@ -283,6 +283,65 @@ func TestGWAndClient(t *testing.T) {
 	if code, _, _ := runCmd(t, "ctl", "events", "-class", "login", "-dir", ctrlDir, "-server", addr); code != exitError {
 		t.Error("知らない種類で検索できた")
 	}
+
+	// 隔離でインシデントが自動で開き、手順、報告の期限、時系列、報告書を扱える（M9）。
+	ctl := func(args ...string) (int, string, string) {
+		t.Helper()
+		return runCmd(t, append(args, "-dir", ctrlDir, "-server", addr)...)
+	}
+	code, stdout, stderr = ctl("ctl", "incident", "list", "-json")
+	var incidents []api.Incident
+	if code != exitOK || json.Unmarshal([]byte(stdout), &incidents) != nil || len(incidents) != 1 || incidents[0].Devices[0] != "pc-001" {
+		t.Fatalf("ctl incident list: %s %s", stdout, stderr)
+	}
+	id := incidents[0].ID
+	if code, stdout, stderr = ctl("ctl", "incident", "update", id, "-personal-data", "true", "-note", "顧客の一覧が端末にあった"); code != exitOK || !strings.Contains(stdout, "速報") {
+		t.Errorf("ctl incident update: %s %s", stdout, stderr)
+	}
+	if code, stdout, stderr = ctl("ctl", "incident", "step", id, "credentials", "done", "-note", "パスワードを変更"); code != exitOK || !strings.Contains(stdout, "パスワードを変更") {
+		t.Errorf("ctl incident step: %s %s", stdout, stderr)
+	}
+	if code, _, _ = ctl("ctl", "incident", "step", id, "credentials", "finished"); code != exitError {
+		t.Error("不正な手順の状態を受け付けた")
+	}
+	if code, stdout, stderr = ctl("ctl", "incident", "timeline", id); code != exitOK || !strings.Contains(stdout, "おとりへの接触") || !strings.Contains(stdout, "端末を隔離した") {
+		t.Errorf("ctl incident timeline: %s %s", stdout, stderr)
+	}
+	report := filepath.Join(dir, "report.md")
+	if code, stdout, stderr = ctl("ctl", "incident", "report", id, "-out", report); code != exitOK {
+		t.Fatalf("ctl incident report: %s %s", stdout, stderr)
+	}
+	if md, _ := os.ReadFile(report); !strings.Contains(string(md), "# インシデント報告 "+id) || !strings.Contains(string(md), "個人情報保護委員会への報告") ||
+		!strings.Contains(string(md), "おとりへの接触") || !strings.Contains(string(md), "| 5 | 認証情報の変更 | 済 |") {
+		t.Errorf("報告書 = %s", md)
+	}
+	if code, stdout, _ = ctl("ctl", "status"); code != exitOK || !strings.Contains(stdout, "対応中 1") || !strings.Contains(stdout, "速報") {
+		t.Errorf("ctl status のインシデント: %s", stdout)
+	}
+
+	// GW を動かしたままバックアップし、別の場所に戻せる（M11）。
+	passFile := filepath.Join(dir, "backup.pass")
+	os.WriteFile(passFile, []byte("a long backup passphrase\n"), 0o600)
+	backupFile := filepath.Join(dir, "gw.backup")
+	if code, stdout, stderr = runCmd(t, "backup", "create", "-config", filepath.Join(dir, "gw.json"), "-out", backupFile, "-passphrase-file", passFile); code != exitOK {
+		t.Fatalf("backup create: %s %s", stdout, stderr)
+	}
+	if code, stdout, stderr = runCmd(t, "backup", "verify", "-in", backupFile, "-passphrase-file", passFile); code != exitOK || !strings.Contains(stdout, "一致しました") {
+		t.Errorf("backup verify: %s %s", stdout, stderr)
+	}
+	other := filepath.Join(t.TempDir(), "etc")
+	if code, stdout, stderr = runCmd(t, "backup", "restore", "-config", filepath.Join(other, "gw.json"), "-in", backupFile, "-passphrase-file", passFile); code != exitOK {
+		t.Fatalf("backup restore: %s %s", stdout, stderr)
+	}
+	if st, err := os.Stat(filepath.Join(other, "controller", fileCAKey)); err != nil || st.Mode().Perm() != 0o600 {
+		t.Errorf("戻した認証局の鍵 = %v %v", st, err)
+	}
+	if data, _ := os.ReadFile(filepath.Join(other, "gw-state", "controller", "incidents.json")); !strings.Contains(string(data), id) {
+		t.Error("戻した状態にインシデントがない")
+	}
+	if code, stdout, stderr = runCmd(t, "ctl", "audit", "-file", filepath.Join(other, "gw-state", "controller", "audit.log")); code != exitOK {
+		t.Errorf("戻した監査ログの連鎖: %s %s", stdout, stderr)
+	}
 }
 
 func TestWatchFiles(t *testing.T) {

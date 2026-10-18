@@ -252,7 +252,8 @@ func (c *Controller) isolateHostLocked(h *host, level policy.IsolationLevel, rea
 	c.auditLocked(actor, ActionHostIsolate, h.MAC, h.IP, map[string]any{"level": level, "reason": reason})
 	c.log.Warn("機器を隔離しました", "MAC", h.MAC, "段階", level, "理由", reason, "操作", actor)
 	c.syncLocked()
-	c.notifyIsolateLocked("", h.MAC, h.IP, c.hostGroupLocked(h), level, reason, actor, c.riskLocked("host:"+h.MAC))
+	inc := c.openIncidentForLocked(h.MAC, "機器 "+h.MAC, reason, actor)
+	c.notifyIsolateLocked("", h.MAC, h.IP, c.hostGroupLocked(h), level, reason, actor, c.riskLocked("host:"+h.MAC), inc)
 }
 
 func (c *Controller) releaseHostLocked(h *host, actor string) {
@@ -263,6 +264,7 @@ func (c *Controller) releaseHostLocked(h *host, actor string) {
 	c.auditLocked(actor, ActionHostRelease, h.MAC, h.IP, map[string]any{"previous": prev})
 	c.log.Info("機器の隔離を解除しました", "MAC", h.MAC, "操作", actor)
 	c.syncLocked()
+	c.refreshIncidentsLocked()
 	if prev != "" {
 		c.notifyReleaseLocked("", h.MAC, prev, actor)
 	}

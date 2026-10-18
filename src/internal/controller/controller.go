@@ -160,6 +160,8 @@ type Controller struct {
 
 	evidenceMu sync.Mutex
 	evidence   []api.EvidenceInfo // 保存した証拠（C11）
+
+	incidents []*incident // インシデント（M9。mu で守る）
 }
 
 // New は台帳、監査ログ、イベントの保存先を開いて CONTROLLER を作る。
@@ -238,6 +240,11 @@ func New(cfg Config) (*Controller, error) {
 		al.Close()
 		return nil, err
 	}
+	if err := c.initIncidents(); err != nil {
+		events.Close()
+		al.Close()
+		return nil, err
+	}
 	return c, nil
 }
 
@@ -312,9 +319,11 @@ func (c *Controller) loop(ctx context.Context) {
 			if c.riskDirty {
 				c.saveRiskLocked()
 			}
+			c.refreshIncidentsLocked()
 			c.mu.Unlock()
 			c.saveLearned(false)
 			c.saveBehavior(false)
+			c.checkIncidentDeadlines()
 		}
 	}
 }
@@ -479,7 +488,8 @@ func (c *Controller) isolateLocked(d *device, level policy.IsolationLevel, reaso
 	c.auditLocked(actor, ActionIsolate, d.ID, d.Addr, map[string]any{"level": level, "reason": reason, "macs": c.linkedMACsLocked(d.ID)})
 	c.log.Warn("端末を隔離しました", "端末", d.ID, "段階", level, "理由", reason, "操作", actor)
 	c.syncLocked()
-	c.notifyIsolateLocked(d.ID, "", d.Addr, cmpOr(d.Group, policy.DefaultGroup), level, reason, actor, c.riskLocked("device:"+d.ID))
+	inc := c.openIncidentForLocked(d.ID, "端末 "+d.ID, reason, actor)
+	c.notifyIsolateLocked(d.ID, "", d.Addr, cmpOr(d.Group, policy.DefaultGroup), level, reason, actor, c.riskLocked("device:"+d.ID), inc)
 }
 
 func (c *Controller) releaseLocked(d *device, actor string) {
@@ -494,6 +504,7 @@ func (c *Controller) releaseLocked(d *device, actor string) {
 	c.auditLocked(actor, ActionRelease, d.ID, d.Addr, map[string]any{"previous": prev})
 	c.log.Info("端末の隔離を解除しました", "端末", d.ID, "操作", actor)
 	c.syncLocked()
+	c.refreshIncidentsLocked()
 	if prev != "" {
 		c.notifyReleaseLocked(d.ID, "", prev, actor)
 	}

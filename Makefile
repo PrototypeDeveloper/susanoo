@@ -19,6 +19,7 @@ FUZZ_TARGETS := \
 	./internal/behavior:FuzzDetector \
 	./internal/intel:FuzzParseFeed \
 	./internal/intel:FuzzParse \
+	./internal/backup:FuzzExtract \
 	./internal/audit:FuzzVerify \
 	./internal/platform/linux:FuzzParseFanotify \
 	./internal/platform/linux:FuzzParseInotify \

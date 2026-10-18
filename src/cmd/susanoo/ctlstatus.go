@@ -84,6 +84,15 @@ func ctlStatus(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintf(tw, "脅威情報\tなし\n")
 	}
+	if n := st.Incidents; n.Open > 0 {
+		s := fmt.Sprintf("対応中 %d", n.Open)
+		if n.Next != nil {
+			s += fmt.Sprintf("（最も近い報告の期限の目安: %s の%s %s、%s）", n.Next.Incident, n.Next.Name, n.Next.Due.Local().Format("01-02 15:04"), remaining(n.Next.Due, time.Now()))
+		}
+		fmt.Fprintf(tw, "インシデント\t%s\n", s)
+	} else {
+		fmt.Fprintf(tw, "インシデント\tなし\n")
+	}
 	if len(st.Notify) > 0 {
 		var parts []string
 		for _, n := range st.Notify {

@@ -60,6 +60,12 @@ func (c *Controller) Handler() http.Handler {
 	mux.Handle("GET "+api.PathEvidence+"/{device}/{id}", c.require(pki.RoleAdmin, c.getEvidence))
 	mux.Handle("POST "+api.PathDevices+"/{id}/evidence", c.require(pki.RoleAdmin, c.requestEvidence))
 	mux.Handle("POST "+api.PathNotifyTest, c.require(pki.RoleAdmin, c.testNotify))
+	mux.Handle("GET "+api.PathIncidents, c.require(pki.RoleAdmin, c.listIncidents))
+	mux.Handle("POST "+api.PathIncidents, c.require(pki.RoleAdmin, c.openIncident))
+	mux.Handle("GET "+api.PathIncidents+"/{id}", c.require(pki.RoleAdmin, c.getIncident))
+	mux.Handle("POST "+api.PathIncidents+"/{id}", c.require(pki.RoleAdmin, c.updateIncident))
+	mux.Handle("POST "+api.PathIncidents+"/{id}/steps/{step}", c.require(pki.RoleAdmin, c.updateStep))
+	mux.Handle("GET "+api.PathIncidents+"/{id}/timeline", c.require(pki.RoleAdmin, c.incidentTimeline))
 	return mux
 }
 

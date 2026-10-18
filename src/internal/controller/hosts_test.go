@@ -128,8 +128,10 @@ func TestGatewaySpoofing(t *testing.T) {
 		t.Errorf("解除後の機器 = %+v", h)
 	}
 	want := []string{"host.isolate:" + macBad.String(), "host.release:" + macBad.String()}
-	if got := auditActions(t, f.dir); !slices.Equal(got, want) {
-		t.Errorf("監査ログ = %v, 期待値 %v", got, want)
+	// 隔離するとインシデントを自動で開く（ID は日付を含むので、別に数える）。
+	got, opened := withoutIncidentOpen(auditActions(t, f.dir))
+	if !slices.Equal(got, want) || opened != 1 {
+		t.Errorf("監査ログ = %v（インシデント %d 件）, 期待値 %v", got, opened, want)
 	}
 	if status, _ := admin.do(http.MethodPost, api.PathHosts+"/not-a-mac/isolate", nil); status != http.StatusBadRequest {
 		t.Errorf("不正な MAC アドレスの応答 = %d", status)

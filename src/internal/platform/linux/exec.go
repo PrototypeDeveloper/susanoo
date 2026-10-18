@@ -56,6 +56,8 @@ type execMonitor struct {
 	procs   *procCache
 	agents  *agentMatcher
 
+	overflow overflowLog
+
 	mu          sync.Mutex
 	tracked     map[int]tracked
 	escalations map[int]time.Time // 権限昇格の元のプロセスの PID と、検知した時刻
@@ -150,6 +152,9 @@ func (m *execMonitor) run(ctx context.Context, emit func(*event.Event)) error {
 		}
 		evs, perr := parseFanotify(buf[:n])
 		for _, ev := range evs {
+			if ev.mask&fanQOverflow != 0 {
+				m.overflow.note(m.log, "プロセスの監視", time.Now())
+			}
 			if ev.fd < 0 {
 				continue
 			}

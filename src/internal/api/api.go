@@ -44,6 +44,11 @@ const (
 	PathEvidence = "/v1/evidence"
 	// PathNotifyTest は試験の通知を送る（M7）。応答は []NotifyResult。
 	PathNotifyTest = "/v1/notify/test"
+	// PathIncidents はインシデント対応の支援（M9）。GET で一覧（[]Incident。?all=1 なら閉じたものも）、POST で開く（IncidentOpen）。
+	// PathIncidents+"/{ID}" の GET で中身、POST で変える（IncidentUpdate）。"/{ID}/steps/{手順}" の POST で手順の状態を変える
+	// （StepUpdate）。"/{ID}/timeline" の GET で時系列（[]TimelineEntry。?all=1 ならすべての種類のイベント、?before=24h で
+	// 開く前のどこから並べるか）。
+	PathIncidents = "/v1/incidents"
 )
 
 // MaxBodyBytes は要求の本文の上限。
@@ -133,6 +138,116 @@ type EvidenceInfo struct {
 	Processes   int       `json:"processes"`
 	Connections int       `json:"connections"`
 	Logs        int       `json:"logs"`
+}
+
+// インシデントの状態。
+const (
+	IncidentOpen   = "open"
+	IncidentClosed = "closed"
+)
+
+// 手順の状態。
+const (
+	StepTodo    = "todo"
+	StepDone    = "done"
+	StepSkipped = "skipped"
+)
+
+// Incident はインシデント（M9）。
+type Incident struct {
+	ID             string         `json:"id"`
+	Title          string         `json:"title"`
+	Devices        []string       `json:"devices"` // 端末 ID か、CLIENT のない機器の MAC アドレス
+	Status         string         `json:"status"`  // open、closed
+	Opened         time.Time      `json:"opened"`
+	OpenedBy       string         `json:"opened_by"`
+	KnownAt        time.Time      `json:"known_at"` // 事態を知った時刻（報告の期限の起算点）
+	Closed         time.Time      `json:"closed,omitzero"`
+	PersonalData   bool           `json:"personal_data,omitempty"`  // 個人情報の漏えい等のおそれがある
+	Malicious      bool           `json:"malicious,omitempty"`      // 不正の目的をもって行われたおそれがある（確報の期限が 60 日になる）
+	PrelimReported time.Time      `json:"prelim_reported,omitzero"` // 個人情報保護委員会に速報した時刻
+	FinalReported  time.Time      `json:"final_reported,omitzero"`  // 確報した時刻
+	Steps          []IncidentStep `json:"steps"`
+	Deadlines      []Deadline     `json:"deadlines,omitempty"` // 個人情報の漏えい等のおそれがあるときの報告の期限の目安
+	Notes          []IncidentNote `json:"notes,omitempty"`
+}
+
+// IncidentStep は対応の手順の 1 つ。
+type IncidentStep struct {
+	ID     string    `json:"id"`
+	Title  string    `json:"title"`
+	Guide  string    `json:"guide"`
+	Status string    `json:"status"`         // todo、done、skipped
+	Auto   bool      `json:"auto,omitempty"` // 状態から自動で済みにする手順
+	By     string    `json:"by,omitempty"`
+	At     time.Time `json:"at,omitzero"`
+	Note   string    `json:"note,omitempty"`
+}
+
+// Deadline は報告の期限の目安。
+type Deadline struct {
+	Name string    `json:"name"`          // 速報、確報
+	From time.Time `json:"from,omitzero"` // 目安の期間の始まり（速報の「概ね 3〜5 日」の 3 日目）
+	Due  time.Time `json:"due"`           // 期限
+	Done time.Time `json:"done,omitzero"` // 報告した時刻
+}
+
+// IncidentNote はインシデントの記録。
+type IncidentNote struct {
+	At   time.Time `json:"at"`
+	By   string    `json:"by"`
+	Text string    `json:"text"`
+}
+
+// IncidentOpenRequest はインシデントを開く要求。
+type IncidentOpenRequest struct {
+	Title        string    `json:"title"`
+	Devices      []string  `json:"devices"`
+	KnownAt      time.Time `json:"known_at,omitzero"` // 省略すると今
+	PersonalData bool      `json:"personal_data,omitempty"`
+	Malicious    bool      `json:"malicious,omitempty"`
+	Note         string    `json:"note,omitempty"`
+}
+
+// IncidentUpdate はインシデントを変える要求。書いた項目だけを変える。
+type IncidentUpdate struct {
+	Title          *string    `json:"title,omitempty"`
+	KnownAt        *time.Time `json:"known_at,omitempty"`
+	PersonalData   *bool      `json:"personal_data,omitempty"`
+	Malicious      *bool      `json:"malicious,omitempty"`
+	PrelimReported *time.Time `json:"prelim_reported,omitempty"` // ゼロの時刻なら取り消す
+	FinalReported  *time.Time `json:"final_reported,omitempty"`
+	Note           string     `json:"note,omitempty"`   // 記録を足す
+	Status         string     `json:"status,omitempty"` // open か closed にする
+}
+
+// StepUpdate は手順の状態を変える要求。
+type StepUpdate struct {
+	Status string `json:"status"` // todo、done、skipped
+	Note   string `json:"note,omitempty"`
+}
+
+// TimelineEntry は時系列の 1 件。
+type TimelineEntry struct {
+	Time     time.Time      `json:"time"`
+	Source   string         `json:"source"` // event、audit、evidence
+	Kind     string         `json:"kind"`   // イベントの種類、監査ログの操作など
+	Device   string         `json:"device,omitempty"`
+	Severity event.Severity `json:"severity,omitempty"`
+	Summary  string         `json:"summary"`
+}
+
+// IncidentCounts は全体の状態に載せるインシデントの数と、最も近い報告の期限。
+type IncidentCounts struct {
+	Open int               `json:"open"`
+	Next *IncidentDeadline `json:"next,omitempty"`
+}
+
+// IncidentDeadline はインシデントの報告の期限。
+type IncidentDeadline struct {
+	Incident string    `json:"incident"`
+	Name     string    `json:"name"`
+	Due      time.Time `json:"due"`
 }
 
 // NotifyResult は試験の通知の結果（M7）。
@@ -266,6 +381,7 @@ type Status struct {
 	Intel          IntelInfo       `json:"intel"`                     // 脅威情報の今の版
 	Risky          []Risk          `json:"risky,omitempty"`           // 危険度の高い端末と機器（高い順）
 	Notify         []NotifyStatus  `json:"notify,omitempty"`          // 通知の宛先ごとの送信の状況
+	Incidents      IncidentCounts  `json:"incidents"`                 // 開いているインシデント（M9）
 }
 
 // RulesPush は署名付きの検知ルールの配布（M3）。

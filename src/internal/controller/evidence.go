@@ -123,6 +123,9 @@ func (c *Controller) postEvidence(w http.ResponseWriter, r *http.Request, id pki
 			"id": ev.ID, "reason": ev.Reason, "sha256": info.SHA256, "bytes": info.Bytes, "time": ev.Time,
 		})
 	}
+	if stored {
+		c.refreshIncidentsLocked()
+	}
 	cmd, err := c.commandLocked(d)
 	c.mu.Unlock()
 	if stored {

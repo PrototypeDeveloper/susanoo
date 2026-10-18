@@ -42,15 +42,16 @@ import (
 type Kind string
 
 const (
-	KindIsolate Kind = "isolate" // 隔離した
-	KindPending Kind = "pending" // 隔離の承認を待っている
-	KindAlert   Kind = "alert"   // 隔離が必要な検知があった（警告モード、監視モードのため隔離しない）
-	KindRelease Kind = "release" // 隔離を解除した
-	KindFinding Kind = "finding" // 加点した検知結果（隔離に至らなかったもの）
-	KindTest    Kind = "test"    // 試験の通知（ctl notify test）
+	KindIsolate  Kind = "isolate"  // 隔離した
+	KindPending  Kind = "pending"  // 隔離の承認を待っている
+	KindAlert    Kind = "alert"    // 隔離が必要な検知があった（警告モード、監視モードのため隔離しない）
+	KindRelease  Kind = "release"  // 隔離を解除した
+	KindFinding  Kind = "finding"  // 加点した検知結果（隔離に至らなかったもの）
+	KindIncident Kind = "incident" // インシデントの報告の期限が近づいた、過ぎた（M9）
+	KindTest     Kind = "test"     // 試験の通知（ctl notify test）
 )
 
-var kinds = []Kind{KindIsolate, KindPending, KindAlert, KindRelease, KindFinding}
+var kinds = []Kind{KindIsolate, KindPending, KindAlert, KindRelease, KindFinding, KindIncident}
 
 // DefaultKinds は宛先が種類を書かないときに送る種類（すべて）。
 var DefaultKinds = kinds
@@ -133,7 +134,7 @@ func (c *Config) Validate() error {
 		seen[d.Name] = true
 		for _, k := range d.Events {
 			if !slices.Contains(kinds, k) {
-				add("%s: events の %q は isolate、pending、alert、release、finding のどれかにしてください", where, k)
+				add("%s: events の %q は isolate、pending、alert、release、finding、incident のどれかにしてください", where, k)
 			}
 		}
 		if _, ok := severities[d.MinSeverity]; d.MinSeverity != "" && !ok {

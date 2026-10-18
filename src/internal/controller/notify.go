@@ -38,7 +38,7 @@ func actorLabel(actor string) string {
 }
 
 // notifyIsolateLocked は隔離したことを知らせる。
-func (c *Controller) notifyIsolateLocked(device, mac string, addr netip.Addr, group string, level policy.IsolationLevel, reason, actor string, risk int) {
+func (c *Controller) notifyIsolateLocked(device, mac string, addr netip.Addr, group string, level policy.IsolationLevel, reason, actor string, risk int, incident string) {
 	name := subjectName(device, mac)
 	target := cmpOr(device, mac)
 	body := "検知に基づいて自動で隔離しました。"
@@ -55,6 +55,10 @@ func (c *Controller) notifyIsolateLocked(device, mac string, addr netip.Addr, gr
 	}
 	if device != "" {
 		f["対処"] += "。証拠は susanoo ctl evidence list -device " + device + " で確かめられます"
+	}
+	if incident != "" {
+		f["インシデント"] = incident
+		f["対処"] += "。対応の手順は susanoo ctl incident show " + incident + " で確かめられます"
 	}
 	c.cfg.Notifier.Notify(notify.Message{Kind: notify.KindIsolate, Severity: event.SeverityHigh, Title: name + " を隔離しました",
 		Body: body, Target: target, Time: c.now(), Fields: f})
