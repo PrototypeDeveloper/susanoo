@@ -52,6 +52,7 @@ type gwConfig struct {
 	NFT              string          `json:"nft"`                  // nft コマンドの場所。既定 /usr/sbin/nft
 	Enforce          *bool           `json:"enforce"`              // false なら GW で遮断しない。既定 true
 	Router           *routerConfig   `json:"router"`               // ルーター方式（G1）。省略すると転送と NAT を設定しない
+	Bridge           *bridgeConfig   `json:"bridge"`               // ブリッジ方式（G1）。router と一緒には使えない
 	DHCP             *dhcpConfig     `json:"dhcp"`                 // DHCP サーバー（G8）。router が必要
 	DNS              *dnsConfig      `json:"dns"`                  // DNS リゾルバ（G3）。router が必要
 	FlowLog          *bool           `json:"flow_log"`             // 通信の記録（G5）。router が必要。既定 true
@@ -117,21 +118,99 @@ func lanIPv6(lan string) (netip.Addr, netip.Prefix, error) {
 	return addr, prefix, nil
 }
 
-// defaultNDProbe は、不正なルーターと DHCPv6 のサーバーを探す既定の間隔。
-const defaultNDProbe = 5 * time.Minute
+// bridgeConfig はブリッジ方式（G1）の設定。GW は上流のルーターと LAN の間に透過のブリッジとして入り、アドレスの変換と DHCP は
+// 上流のルーターに任せる。ブリッジとポートの装置は管理者が用意する（ブリッジに GW のアドレスを設定する）。
+type bridgeConfig struct {
+	Name           string          `json:"name"`              // ブリッジの装置（例 br0）。GW の管理通信のアドレスを持つ
+	LAN            string          `json:"lan"`               // LAN 側のポート
+	WAN            string          `json:"wan"`               // 上流のルーター側のポート
+	Gateway        string          `json:"gateway"`           // 上流のルーターのアドレス（なりすましを検知する）。省略するとブリッジの既定の経路から
+	WANDHCP        bool            `json:"wan_dhcp"`          // ブリッジのアドレスを上流の DHCP で得る
+	AdminPorts     *[]uint16       `json:"admin_ports"`       // LAN から受け付ける管理用のポート。既定 [22]
+	TrustedRouters []string        `json:"trusted_routers"`   // LAN にいてよいルーターの MAC アドレス（その RA と DHCPv6 を不正としない）
+	NDProbe        config.Duration `json:"nd_probe_interval"` // 不正なルーターと DHCPv6 のサーバーを探す間隔。既定 5m
+}
 
-// trustedRouters は、認めるルーターの MAC アドレスを確かめて、決まった書き方にする。
-func (r *routerConfig) trustedRouters() ([]string, error) {
+// lanSide は、GW の LAN の側の装置と方式（ルーター方式かブリッジ方式か）をまとめる。
+type lanSide struct {
+	Port      string     // ARP と近隣探索を監視し、外部通信の制御で LAN とみなす装置（ルーター方式の LAN、ブリッジの LAN 側のポート）
+	AddrIface string     // GW のアドレスを持つ装置（ルーター方式の LAN、ブリッジ）
+	Family    nft.Family // nftables のテーブルの種類
+	Router    *routerConfig
+	Bridge    *bridgeConfig
+}
+
+// lanSide は LAN の側の設定を返す。ルーター方式でもブリッジ方式でもなければ nil。
+func (c gwConfig) lanSide() *lanSide {
+	switch {
+	case c.Router != nil:
+		return &lanSide{Port: c.Router.LAN, AddrIface: c.Router.LAN, Family: nft.Inet, Router: c.Router}
+	case c.Bridge != nil:
+		return &lanSide{Port: c.Bridge.LAN, AddrIface: c.Bridge.Name, Family: nft.Bridge, Bridge: c.Bridge}
+	}
+	return nil
+}
+
+func (s *lanSide) trustedRouters() ([]string, error) {
+	var macs []string
+	what := "router"
+	if s.Router != nil {
+		macs = s.Router.TrustedRouters
+	} else {
+		macs, what = s.Bridge.TrustedRouters, "bridge"
+	}
 	var out []string
-	for _, s := range r.TrustedRouters {
-		hw, err := net.ParseMAC(s)
+	for _, m := range macs {
+		hw, err := net.ParseMAC(m)
 		if err != nil || len(hw) != 6 {
-			return nil, fmt.Errorf("router.trusted_routers の %q は MAC アドレスで書いてください", s)
+			return nil, fmt.Errorf("%s.trusted_routers の %q は MAC アドレスで書いてください", what, m)
 		}
 		out = append(out, hw.String())
 	}
 	return out, nil
 }
+
+func (s *lanSide) ndProbe() time.Duration {
+	if s.Router != nil {
+		return s.Router.NDProbe.Or(defaultNDProbe)
+	}
+	return s.Bridge.NDProbe.Or(defaultNDProbe)
+}
+
+func (s *lanSide) adminPorts() []uint16 {
+	var p *[]uint16
+	if s.Router != nil {
+		p = s.Router.AdminPorts
+	} else {
+		p = s.Bridge.AdminPorts
+	}
+	if p == nil {
+		return []uint16{22}
+	}
+	return *p
+}
+
+// gateways は、GW のアドレスのほかになりすましを検知するゲートウェイ（ブリッジ方式の上流のルーター）のアドレスを返す。
+func (s *lanSide) gateways() ([]netip.Addr, error) {
+	if s.Bridge == nil {
+		return nil, nil
+	}
+	if s.Bridge.Gateway != "" {
+		a, err := netip.ParseAddr(s.Bridge.Gateway)
+		if err != nil || !a.Is4() {
+			return nil, fmt.Errorf("bridge.gateway %q は IPv4 のアドレスで書いてください", s.Bridge.Gateway)
+		}
+		return []netip.Addr{a}, nil
+	}
+	a, err := gw.DefaultGateway4(s.Bridge.Name)
+	if err != nil {
+		return nil, nil // 既定の経路がなければ、上流のルーターのなりすましは検知しない
+	}
+	return []netip.Addr{a}, nil
+}
+
+// defaultNDProbe は、不正なルーターと DHCPv6 のサーバーを探す既定の間隔。
+const defaultNDProbe = 5 * time.Minute
 
 type dhcpConfig struct {
 	Range     string          `json:"range"`      // 割り当てる範囲（例: 192.168.10.100-192.168.10.199）
@@ -170,19 +249,38 @@ func runGW(ctx context.Context, args []string, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, fmt.Errorf("listen %q はアドレスとポート（例: 192.168.10.1:8443）で書いてください", cfg.Listen))
 	}
-	if r := cfg.Router; r != nil {
-		if _, err := r.trustedRouters(); err != nil {
+	if cfg.Router != nil && cfg.Bridge != nil {
+		return fail(stderr, errors.New("router と bridge は一緒に使えません（どちらかの方式にしてください）"))
+	}
+	if b := cfg.Bridge; b != nil {
+		if b.Name == "" || b.LAN == "" || b.WAN == "" {
+			return fail(stderr, errors.New("bridge には name、lan、wan が必要です"))
+		}
+		if cfg.DHCP != nil {
+			return fail(stderr, errors.New("ブリッジ方式では dhcp を使えません（上流のルーターの DHCP を使います）"))
+		}
+	}
+	if side := cfg.lanSide(); side != nil {
+		if _, err := side.trustedRouters(); err != nil {
 			return fail(stderr, err)
 		}
+		if _, err := side.gateways(); err != nil {
+			return fail(stderr, err)
+		}
+		if side.ndProbe() < time.Second {
+			return fail(stderr, errors.New("nd_probe_interval は 1s 以上にしてください"))
+		}
+	}
+	if r := cfg.Router; r != nil {
 		if d := r.RAInterval.Or(defaultRAInterval); d < 4*time.Second || d > 1800*time.Second {
 			return fail(stderr, errors.New("router.ra_interval は 4s から 30m にしてください"))
 		}
-		if d := r.NDProbe.Or(defaultNDProbe); d < time.Second {
-			return fail(stderr, errors.New("router.nd_probe_interval は 1s 以上にしてください"))
-		}
 	}
-	if (cfg.DHCP != nil || cfg.DNS != nil) && cfg.Router == nil {
-		return fail(stderr, errors.New("dhcp と dns を使うには router の設定が必要です"))
+	if cfg.DHCP != nil && cfg.Router == nil {
+		return fail(stderr, errors.New("dhcp を使うには router の設定が必要です"))
+	}
+	if cfg.DNS != nil && cfg.lanSide() == nil {
+		return fail(stderr, errors.New("dns を使うには router か bridge の設定が必要です"))
 	}
 	upstreams, err := parseUpstreams(cfg.DNS)
 	if err != nil {
@@ -267,8 +365,8 @@ func runGW(ctx context.Context, args []string, stderr io.Writer) int {
 	g.ca, g.pkiDir = ca, pkiDir
 	pols := &gwPolicies{store: store, engine: g.engine, enforcer: g.gwEnforcer, log: log}
 	intels := &gwIntel{store: intelStore, runner: nft.Command{Path: cfg.NFT}, log: log}
-	if cfg.Router != nil {
-		intels.lanIface = cfg.Router.LAN
+	if side := cfg.lanSide(); side != nil {
+		intels.lanIface, intels.family = side.Port, side.Family
 		if g.files.flowLog != nil {
 			intels.group = flow.DefaultBlockGroup
 		}
@@ -296,7 +394,7 @@ func runGW(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	if g.engine != nil {
 		cur, _ := store.Policies()
-		failOpen(g.engine, intels, cur.OnFailure, upstreams, log)
+		failOpen(g.engine, intels, g.bridgeOpen, cur.OnFailure, upstreams, log)
 	}
 	if err != nil {
 		return fail(stderr, err)
@@ -307,9 +405,10 @@ func runGW(ctx context.Context, args []string, stderr io.Writer) int {
 
 // gwPrepared は GW の執行部が持つもの。
 type gwPrepared struct {
-	enforcer   controller.Enforcer // 端末単位の遮断（G9）。nil なら GW で遮断しない
-	gwEnforcer *gw.Enforcer        // enforcer と同じもの（ポリシーの切り替えで更新サーバーを差し替える）
-	engine     *egress.Engine      // 外部通信の制御（nftables に反映する側）。nil ならルーター方式でない
+	enforcer   controller.Enforcer         // 端末単位の遮断（G9）。nil なら GW で遮断しない
+	gwEnforcer *gw.Enforcer                // enforcer と同じもの（ポリシーの切り替えで更新サーバーを差し替える）
+	engine     *egress.Engine              // 外部通信の制御（nftables に反映する側）。nil ならルーター方式でもブリッジ方式でもない
+	bridgeOpen func(context.Context) error // ブリッジ方式で、停止中に DNS の向け直しをやめる（ルーター方式では nil）
 	files      gwFiles
 	ca         *pki.CA // 内部の認証局（秘密鍵を含む）
 	pkiDir     string  // 認証局と CONTROLLER の鍵のディレクトリ
@@ -441,16 +540,19 @@ func prepareGW(ctx context.Context, cfg gwConfig, pol *policy.Policy, listen net
 	}
 	ln.Close()
 
-	r := cfg.Router
-	if r == nil {
+	side := cfg.lanSide()
+	if side == nil {
 		return g, nil
 	}
-	lanAddr, lanPrefix, _, err := gw.InterfaceAddr(r.LAN)
+	if g.gwEnforcer != nil {
+		g.gwEnforcer.Family = side.Family
+	}
+	lanAddr, lanPrefix, lanMAC, err := gw.InterfaceAddr(side.AddrIface)
 	if err != nil {
 		return nil, err
 	}
 	var lanAddr6 netip.Addr
-	if r.IPv6 {
+	if r := side.Router; r != nil && r.IPv6 {
 		if lanAddr6, _, err = lanIPv6(r.LAN); err != nil {
 			return nil, err
 		}
@@ -458,29 +560,53 @@ func prepareGW(ctx context.Context, cfg gwConfig, pol *policy.Policy, listen net
 	if listen.Addr() != lanAddr {
 		log.Warn("管理通信の待ち受けアドレスが LAN 側のアドレスと違います", "listen", listen, "LAN", lanAddr)
 	}
-	if g.files.arp, err = gw.OpenARPSocket(r.LAN); err != nil {
+	openARP, openND := gw.OpenARPSocket, gw.OpenNDSocket
+	if side.Bridge != nil {
+		openARP, openND = gw.OpenARPSocketPort, gw.OpenNDSocketPort // ブリッジのポートでは種類を問わずに受け取る
+	}
+	if g.files.arp, err = openARP(side.Port); err != nil {
 		return nil, err
 	}
-	if g.files.nd, err = gw.OpenNDSocket(r.LAN); err != nil {
+	if g.files.nd, err = openND(side.Port); err != nil {
 		log.Warn("IPv6 の近隣探索を監視できません", "エラー", err)
 		g.files.nd = nil
 	}
-	adminPorts := []uint16{22}
-	if r.AdminPorts != nil {
-		adminPorts = *r.AdminPorts
+	if r := side.Router; r != nil {
+		router := &gw.Router{
+			Rules: nft.Router{LAN: r.LAN, WAN: r.WAN, ManagementPort: listen.Port(), AdminPorts: side.adminPorts(), DHCP: cfg.DHCP != nil, DNS: cfg.DNS != nil, WANDHCP: r.WANDHCP, IPv6: r.IPv6},
+			NFT:   runner,
+		}
+		if err := router.Apply(ctx); err != nil {
+			return nil, err
+		}
+		log.Info("ルーター方式を設定しました", "LAN", r.LAN, "WAN", r.WAN, "LAN のネットワーク", lanPrefix)
+	} else {
+		b := side.Bridge
+		trusted, _ := side.trustedRouters() // 起動のときに確かめてある
+		rules := nft.BridgeRules{Bridge: b.Name, LAN: b.LAN, WAN: b.WAN, ManagementPort: listen.Port(), AdminPorts: side.adminPorts(),
+			WANDHCP: b.WANDHCP, MAC: lanMAC, TrustedRouters: trusted}
+		open, err := rules.Script() // DNS を向け直さないルール（停止中に使う）
+		if err != nil {
+			return nil, err
+		}
+		if cfg.DNS != nil {
+			rules.DNS = lanAddr
+		}
+		script, err := rules.Script()
+		if err != nil {
+			return nil, err
+		}
+		if err := runner.Run(ctx, script); err != nil {
+			return nil, err
+		}
+		g.bridgeOpen = func(ctx context.Context) error { return runner.Run(ctx, open) }
+		log.Info("ブリッジ方式を設定しました", "ブリッジ", b.Name, "LAN", b.LAN, "WAN", b.WAN, "LAN のネットワーク", lanPrefix)
 	}
-	router := &gw.Router{
-		Rules: nft.Router{LAN: r.LAN, WAN: r.WAN, ManagementPort: listen.Port(), AdminPorts: adminPorts, DHCP: cfg.DHCP != nil, DNS: cfg.DNS != nil, WANDHCP: r.WANDHCP, IPv6: r.IPv6},
-		NFT:   runner,
-	}
-	if err := router.Apply(ctx); err != nil {
-		return nil, err
-	}
-	log.Info("ルーター方式を設定しました", "LAN", r.LAN, "WAN", r.WAN, "LAN のネットワーク", lanPrefix)
 
-	// 外部通信の制御（G2、G4）はルーター方式で常に有効にする。DNS の制御（G3）は dns の設定があるときだけ。
-	ecfg := egress.Config{Policy: pol, LAN: r.LAN, NFT: runner, Logger: log}
-	if cfg.DNS != nil {
+	// 外部通信の制御（G2、G4）は常に有効にする。DNS の制御（G3）は dns の設定があるときだけ。
+	// ブリッジ方式の DNS の向け直しは BridgeRules が行う。
+	ecfg := egress.Config{Policy: pol, LAN: side.Port, Family: side.Family, NFT: runner, Logger: log}
+	if cfg.DNS != nil && side.Router != nil {
 		ecfg.DNS, ecfg.DNS6 = lanAddr, lanAddr6
 	}
 	if g.engine, err = egress.New(ecfg); err != nil {
@@ -490,7 +616,7 @@ func prepareGW(ctx context.Context, cfg gwConfig, pol *policy.Policy, listen net
 		return nil, err
 	}
 	if cfg.DHCP != nil {
-		pc, err := dhcp.Listen(r.LAN)
+		pc, err := dhcp.Listen(side.Port)
 		if err != nil {
 			return nil, err
 		}
@@ -535,8 +661,12 @@ func prepareGW(ctx context.Context, cfg gwConfig, pol *policy.Policy, listen net
 		}
 	}
 	if cfg.FlowLog == nil || *cfg.FlowLog {
-		if err := startFlowLog(ctx, r.LAN, runner); err != nil {
-			return nil, err
+		if err := startFlowLog(ctx, side.Port, side.Family, runner); err != nil {
+			if side.Bridge == nil {
+				return nil, err
+			}
+			// bridge のテーブルで NFLOG を使えないカーネルでは、接続の終わりの記録（conntrack）だけを続ける。
+			log.Warn("ブリッジの通信の最初のパケットを受け取れません。SNI と HTTP の Host は記録しません", "エラー", err)
 		}
 		socks, err := flow.OpenSockets(flow.DefaultLogGroup, flow.DefaultBlockGroup)
 		if err != nil {
@@ -841,7 +971,7 @@ func runGWInProcess(ctx context.Context, g *gwPrepared, pols *gwPolicies, intels
 			return err
 		}
 		c.egress, c.lan = lanPart, lanPart
-		c.trusted, _ = cfg.Router.trustedRouters() // 起動のときに確かめてある
+		c.trusted, _ = cfg.lanSide().trustedRouters() // 起動のときに確かめてある
 		pols.notifyLAN = func(st controller.PolicyState) { lanPart.setPolicyState(st) }
 		lanPart.setIntel(intelSet.Blocklist())
 		intels.notifyLAN = lanPart.setIntel
@@ -982,19 +1112,23 @@ func serveGWController(conn *os.File, log *slog.Logger) error {
 		}
 	}()
 	var link *privsep.LANLink
-	if cfg.Router != nil {
+	if side := cfg.lanSide(); side != nil {
 		if peer == nil {
 			return errors.New("LAN 側の処理とのつながりを渡されていません")
 		}
 		link = privsep.ConnectLAN(peer, log)
 		defer link.Close()
 		go func() { <-link.Done(); cancel() }()
-		addr, prefix, mac, err := gw.InterfaceAddr(cfg.Router.LAN)
+		addr, prefix, mac, err := gw.InterfaceAddr(side.AddrIface)
 		if err != nil {
 			return err
 		}
-		c.lan = &remoteLAN{addr: addr, prefix: prefix, mac: mac, link: link, addrs6: &gw.Addrs6Cache{Name: cfg.Router.LAN}}
-		if c.trusted, err = cfg.Router.trustedRouters(); err != nil {
+		gateways, err := side.gateways()
+		if err != nil {
+			return err
+		}
+		c.lan = &remoteLAN{addr: addr, prefix: prefix, mac: mac, link: link, addrs6: &gw.Addrs6Cache{Name: side.AddrIface}, gateways: gateways}
+		if c.trusted, err = side.trustedRouters(); err != nil {
 			return err
 		}
 		c.egress = membershipFanout{remote, link}
@@ -1008,12 +1142,15 @@ func serveGWController(conn *os.File, log *slog.Logger) error {
 
 // remoteLAN は、CONTROLLER の側から見た GW の LAN（controller.LAN）。在席の確認は LAN 側の処理に頼む。
 type remoteLAN struct {
-	addr   netip.Addr
-	prefix netip.Prefix
-	mac    net.HardwareAddr
-	link   *privsep.LANLink
-	addrs6 *gw.Addrs6Cache
+	addr     netip.Addr
+	prefix   netip.Prefix
+	mac      net.HardwareAddr
+	link     *privsep.LANLink
+	addrs6   *gw.Addrs6Cache
+	gateways []netip.Addr // ブリッジ方式の上流のルーター
 }
+
+func (r *remoteLAN) Gateways() []netip.Addr { return r.gateways }
 
 func (r *remoteLAN) Addrs6() []netip.Addr { return r.addrs6.Get() }
 func (r *remoteLAN) WithdrawRA(ctx context.Context, src netip.Addr, mac net.HardwareAddr, prefixes []netip.Prefix, rdnss []netip.Addr) error {
@@ -1059,8 +1196,8 @@ func serveGWLAN(conn *os.File, log *slog.Logger) error {
 		return err
 	}
 	defer remote.Close()
-	if hello.Config.Router == nil {
-		return errors.New("ルーター方式でないのに LAN 側の処理を起動されました")
+	if hello.Config.lanSide() == nil {
+		return errors.New("ルーター方式でもブリッジ方式でもないのに LAN 側の処理を起動されました")
 	}
 	pol, canary, err := parsePolicies(hello.Policy, hello.Canary)
 	if err != nil {
@@ -1197,6 +1334,8 @@ type gwLAN struct {
 	stateDir string
 	files    gwFiles
 	lan      *gw.LAN
+	side     *lanSide
+	gateways []netip.Addr // ブリッジ方式の上流のルーター
 	addrs6   *gw.Addrs6Cache
 	ecfg     egress.Config                 // DNS の判断の設定（ポリシーを切り替えるときに作り直す）
 	engine   atomic.Pointer[egress.Engine] // DNS の判断（nftables への反映は learner に任せる）
@@ -1211,7 +1350,12 @@ type gwLAN struct {
 // newGWLAN は LAN 側の処理を作る。DNS の判断には今の版と先行適用の版（canary。なければ nil）を使い、
 // DNS で得たアドレスは learner に加えさせる。
 func newGWLAN(cfg gwConfig, pol, canary *policy.Policy, stateDir string, files gwFiles, learner privsep.Learner, forward privsep.MembershipSetter, log *slog.Logger) (*gwLAN, error) {
-	lan, err := gw.NewLAN(cfg.Router.LAN, files.arp)
+	side := cfg.lanSide()
+	lan, err := gw.NewLANOn(side.Port, side.AddrIface, files.arp)
+	if err != nil {
+		return nil, err
+	}
+	gateways, err := side.gateways()
 	if err != nil {
 		return nil, err
 	}
@@ -1220,11 +1364,11 @@ func newGWLAN(cfg gwConfig, pol, canary *policy.Policy, stateDir string, files g
 			return nil, err
 		}
 	}
-	l := &gwLAN{cfg: cfg, stateDir: stateDir, files: files, lan: lan, addrs6: &gw.Addrs6Cache{Name: cfg.Router.LAN}, forward: forward, log: log}
+	l := &gwLAN{cfg: cfg, stateDir: stateDir, files: files, lan: lan, side: side, gateways: gateways, addrs6: &gw.Addrs6Cache{Name: side.AddrIface}, forward: forward, log: log}
 	l.isolated.Store(&map[netip.Addr]bool{})
 	l.members.Store(&egress.Membership{})
 	l.ecfg = egress.Config{
-		LAN:    cfg.Router.LAN,
+		LAN:    side.Port,
 		Remote: learnOnly{learner},
 		OnLearn: func(group, name string, blocked bool) {
 			if s := l.sink.Load(); s != nil {
@@ -1303,7 +1447,8 @@ func (l *gwLAN) MAC() net.HardwareAddr { return l.lan.MAC() }
 func (l *gwLAN) Probe(ctx context.Context, ip netip.Addr) (net.HardwareAddr, bool) {
 	return l.lan.Probe(ctx, ip)
 }
-func (l *gwLAN) Addrs6() []netip.Addr { return l.addrs6.Get() }
+func (l *gwLAN) Addrs6() []netip.Addr   { return l.addrs6.Get() }
+func (l *gwLAN) Gateways() []netip.Addr { return l.gateways }
 func (l *gwLAN) WithdrawRA(_ context.Context, src netip.Addr, mac net.HardwareAddr, prefixes []netip.Prefix, rdnss []netip.Addr) error {
 	return l.lan.WithdrawRA(src, mac, prefixes, rdnss)
 }
@@ -1436,8 +1581,8 @@ func (l *gwLAN) run(ctx context.Context, sink privsep.LANObserver) error {
 			}
 		})
 		background("近隣探索の監視", l.lan.RunND)
-		go l.probeIPv6(ctx, cfg.Router.NDProbe.Or(defaultNDProbe))
-		if cfg.Router.IPv6 {
+		go l.probeIPv6(ctx, l.side.ndProbe())
+		if cfg.Router != nil && cfg.Router.IPv6 {
 			addr6, prefix6, err := lanIPv6(cfg.Router.LAN)
 			if err != nil {
 				return err
@@ -1448,7 +1593,7 @@ func (l *gwLAN) run(ctx context.Context, sink privsep.LANObserver) error {
 			}
 			go l.advertise(ctx, cfg.Router.RAInterval.Or(defaultRAInterval), prefix6, rdnss, solicited)
 		}
-	} else if cfg.Router.IPv6 {
+	} else if cfg.Router != nil && cfg.Router.IPv6 {
 		return errors.New("router.ipv6 には IPv6 の近隣探索のソケットが必要です")
 	}
 	if d := cfg.DHCP; d != nil {
@@ -1491,7 +1636,7 @@ func (l *gwLAN) run(ctx context.Context, sink privsep.LANObserver) error {
 	if l.files.flowCT != nil {
 		fcfg := flow.Config{LAN: l.lan.Prefix(), Gateway: l.lan.Addr(), LogGroup: flow.DefaultLogGroup, BlockGroup: flow.DefaultBlockGroup,
 			OnRecord: func(r flow.Record) { sink.RecordFlow(flowRecord(r)) }, Logger: log}
-		if cfg.Router.IPv6 {
+		if cfg.Router != nil && cfg.Router.IPv6 {
 			if addr6, prefix6, err := lanIPv6(cfg.Router.LAN); err == nil {
 				fcfg.LAN6, fcfg.Gateway6 = prefix6, addr6
 			}
@@ -1528,7 +1673,7 @@ func chownTree(dir string, uid, gid int) error {
 // failOpen は、停止するときの通信の扱いをポリシーの障害時の動作（G12）に合わせる。
 // fail_open なら外部通信の制御をやめ、LAN の DNS を最初の平文の上流に向け直す。fail_closed なら制御を残す。
 // 端末単位の隔離は、どちらでも残す（乗っ取られた端末を通さないため）。
-func failOpen(engine *egress.Engine, intels *gwIntel, mode policy.FailureMode, upstreams []*dns.Upstream, log *slog.Logger) {
+func failOpen(engine *egress.Engine, intels *gwIntel, bridgeOpen func(context.Context) error, mode policy.FailureMode, upstreams []*dns.Upstream, log *slog.Logger) {
 	if mode != policy.FailOpen {
 		log.Info("停止中も外部通信の制御を続けます（fail_closed）")
 		return
@@ -1549,16 +1694,21 @@ func failOpen(engine *egress.Engine, intels *gwIntel, mode policy.FailureMode, u
 	if err := intels.stop(ctx); err != nil {
 		log.Error("脅威情報のアドレスの遮断をやめられません", "エラー", err)
 	}
+	if bridgeOpen != nil {
+		if err := bridgeOpen(ctx); err != nil {
+			log.Error("ブリッジ方式の DNS の向け直しをやめられません", "エラー", err)
+		}
+	}
 	log.Warn("停止中は外部通信の制御をやめ、通信を通します（fail_open）。端末の隔離は続けます")
 }
 
 // startFlowLog は conntrack の通信量と時刻の記録を有効にし、各接続の最初の数パケットを NFLOG で渡すルールを入れる。
 // 通信量を数えられないとパケットの数を絞れないので、有効にできなければルールを入れない。
-func startFlowLog(ctx context.Context, lanIface string, runner nft.Runner) error {
+func startFlowLog(ctx context.Context, lanIface string, fam nft.Family, runner nft.Runner) error {
 	if err := flow.EnableAccounting(); err != nil {
 		return err
 	}
-	script, err := nft.FlowLog{LAN: lanIface, Group: flow.DefaultLogGroup}.Script()
+	script, err := nft.FlowLog{Family: fam, LAN: lanIface, Group: flow.DefaultLogGroup}.Script()
 	if err != nil {
 		return err
 	}
@@ -1738,8 +1888,9 @@ func (g *gwPolicies) change(ctx context.Context, op func() error) (controller.Po
 type gwIntel struct {
 	store     *intel.Store
 	runner    nft.Runner
-	lanIface  string // 空ならルーター方式でない（nftables で遮断しない）
-	group     uint16 // 落としたパケットを渡す NFLOG のグループ（0 なら渡さない）
+	lanIface  string     // 空ならルーター方式でもブリッジ方式でもない（nftables で遮断しない）
+	family    nft.Family // テーブルの種類
+	group     uint16     // 落としたパケットを渡す NFLOG のグループ（0 なら渡さない）
 	notifyLAN func(intel.Blocklist)
 	log       *slog.Logger
 	mu        sync.Mutex
@@ -1750,11 +1901,21 @@ func (g *gwIntel) apply(ctx context.Context, s *intel.Set) error {
 	if g.lanIface == "" {
 		return nil
 	}
-	script, err := nft.Intel{LAN: g.lanIface, Group: g.group, Block: s.BlockedPrefixes()}.Script()
+	rules := nft.Intel{Family: g.family, LAN: g.lanIface, Group: g.group, Block: s.BlockedPrefixes()}
+	script, err := rules.Script()
 	if err != nil {
 		return err
 	}
-	return g.runner.Run(ctx, script)
+	err = g.runner.Run(ctx, script)
+	if err != nil && g.family == nft.Bridge && g.group != 0 {
+		// bridge のテーブルで NFLOG を使えないカーネルでは、記録せずに落とす。
+		g.log.Warn("脅威情報のアドレスに落としたパケットを記録できません。記録せずに遮断します", "エラー", err)
+		g.group, rules.Group = 0, 0
+		if script, err = rules.Script(); err == nil {
+			err = g.runner.Run(ctx, script)
+		}
+	}
+	return err
 }
 
 // stop は脅威情報のアドレスの遮断をやめる（停止中に通信を通すとき）。
@@ -1762,7 +1923,7 @@ func (g *gwIntel) stop(ctx context.Context) error {
 	if g.lanIface == "" {
 		return nil
 	}
-	return g.runner.Run(ctx, nft.DeleteTable(nft.IntelTable))
+	return g.runner.Run(ctx, nft.DeleteTableIn(g.family, nft.IntelTable))
 }
 
 func (g *gwIntel) ApplyIntel(ctx context.Context, env sign.Envelope) error {

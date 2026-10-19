@@ -19,6 +19,7 @@ import (
 
 // Enforcer は nftables で端末を遮断する。controller.Enforcer を満たす。
 type Enforcer struct {
+	Family         nft.Family // テーブルの種類（空なら inet。ブリッジ方式は bridge）
 	NFT            nft.Runner
 	ManagementPort uint16         // GW 上の CONTROLLER の待ち受けポート
 	Updates        []netip.Prefix // 隔離中も許可する更新サーバー
@@ -33,7 +34,7 @@ type Enforcer struct {
 func (e *Enforcer) Sync(ctx context.Context, addrs map[netip.Addr]policy.IsolationLevel, macs map[string]policy.IsolationLevel) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	rules := nft.GWIsolation{ManagementPort: e.ManagementPort, Addrs: addrs, MACs: macs, Updates: e.Updates}
+	rules := nft.GWIsolation{Family: e.Family, ManagementPort: e.ManagementPort, Addrs: addrs, MACs: macs, Updates: e.Updates}
 	if e.created {
 		script, err := rules.SetsScript()
 		if err != nil {

@@ -180,3 +180,29 @@ func TestIPv6MembershipAndIsolation(t *testing.T) {
 		t.Errorf("IPv6 アドレスから引いた機器 = %+v", h)
 	}
 }
+
+// ブリッジ方式の上流のルーターのアドレスを名乗る機器はゲートウェイのなりすまし。DHCP で割り当てていないアドレスでも、
+// 5 分以内に別の機器が名乗っていたらアドレスのなりすましにする。
+func TestUpstreamGatewayAndARPOwner(t *testing.T) {
+	lan := &fakeLAN{}
+	f := startWith(t, pkitest.New(t), t.TempDir(), testPolicy(policy.ResponseEnforce, false), lan)
+	admin := f.peer(pki.RoleAdmin, "admin")
+	f.ctrl.ObserveNeighbor(macEvil6, upstreamRouter)
+	if h := f.hosts(admin)[macEvil6.String()]; h.Reason != ReasonGatewaySpoofing || h.IP != "" {
+		t.Errorf("上流のルーターのなりすまし = %+v", h)
+	}
+	static := netip.MustParseAddr("127.0.0.50")
+	f.ctrl.ObserveNeighbor(macPC6, static)
+	other := net.HardwareAddr{2, 0, 0, 0, 0, 0x68}
+	f.ctrl.ObserveNeighbor(other, static)
+	if h := f.hosts(admin)[other.String()]; h.Reason != ReasonIPSpoofing {
+		t.Errorf("割り当てのないアドレスのなりすまし = %+v", h)
+	}
+	// 5 分を過ぎて別の機器が使い始めるのは、なりすましではない（アドレスを譲った）。
+	f.clock.advance(ipv4OwnerWindow + time.Second)
+	third := net.HardwareAddr{2, 0, 0, 0, 0, 0x69}
+	f.ctrl.ObserveNeighbor(third, static)
+	if h := f.hosts(admin)[third.String()]; h.Isolation != "" || h.IP != static.String() {
+		t.Errorf("アドレスを引き継いだ機器 = %+v", h)
+	}
+}

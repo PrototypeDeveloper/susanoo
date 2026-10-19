@@ -29,6 +29,30 @@ const (
 	GWTable     = "susanoo_gw"     // GW の端末単位の遮断（G9）
 )
 
+// Family は nftables のテーブルの種類。ルーター方式は inet、ブリッジ方式（G1）は bridge のテーブルで転送を制御する。
+// bridge のテーブルでは、iifname はブリッジのポートを指し、ct の照合には nf_conntrack_bridge を使う。
+type Family string
+
+const (
+	Inet   Family = "inet"
+	Bridge Family = "bridge"
+)
+
+// String はテーブルの種類の名前を返す（空なら inet）。
+func (f Family) String() string {
+	if f == "" {
+		return string(Inet)
+	}
+	return string(f)
+}
+
+func (f Family) valid() error {
+	if f != "" && f != Inet && f != Bridge {
+		return fmt.Errorf("nft: テーブルの種類 %q が不正です", string(f))
+	}
+	return nil
+}
+
 // priority は susanoo のチェインの優先度。一般的なフィルター（0）より先に評価する。
 const priority = "-10"
 
@@ -94,6 +118,14 @@ type Element struct {
 
 // ListSet は inet のテーブル table の集合 set の要素を返す（nft -j list set）。
 func (c Command) ListSet(ctx context.Context, table, set string) ([]Element, error) {
+	return c.ListSetIn(ctx, Inet, table, set)
+}
+
+// ListSetIn は ListSet と同じだが、テーブルの種類 fam を指定する。
+func (c Command) ListSetIn(ctx context.Context, fam Family, table, set string) ([]Element, error) {
+	if err := fam.valid(); err != nil {
+		return nil, err
+	}
 	if !ifacePattern.MatchString(table) || !ifacePattern.MatchString(set) {
 		return nil, fmt.Errorf("nft: テーブル %q か集合 %q の名前が不正です", table, set)
 	}
@@ -101,7 +133,7 @@ func (c Command) ListSet(ctx context.Context, table, set string) ([]Element, err
 	if path == "" {
 		path = DefaultPath
 	}
-	cmd := exec.CommandContext(ctx, path, append(slices.Clone(c.Args), "-j", "list", "set", "inet", table, set)...)
+	cmd := exec.CommandContext(ctx, path, append(slices.Clone(c.Args), "-j", "list", "set", fam.String(), table, set)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.Env = []string{}
@@ -155,9 +187,14 @@ func parseSetJSON(data []byte) ([]Element, error) {
 }
 
 // replaceTable はテーブルを作り直すスクリプトの先頭部分を返す。
-func replaceTable(name string) string {
-	return fmt.Sprintf("table inet %s {}\ndelete table inet %s\n", name, name)
+func replaceTable(name string) string { return replaceTableIn(Inet, name) }
+
+func replaceTableIn(fam Family, name string) string {
+	return fmt.Sprintf("table %[1]s %[2]s {}\ndelete table %[1]s %[2]s\n", fam, name)
 }
 
 // DeleteTable はテーブルを削除するスクリプトを返す。テーブルがなくても失敗しない。
 func DeleteTable(name string) string { return replaceTable(name) }
+
+// DeleteTableIn は DeleteTable と同じだが、テーブルの種類 fam を指定する。
+func DeleteTableIn(fam Family, name string) string { return replaceTableIn(fam, name) }

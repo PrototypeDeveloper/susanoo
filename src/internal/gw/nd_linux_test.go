@@ -10,11 +10,16 @@ import (
 )
 
 // runBPF は ndFilter に使う classic BPF の命令（ld b/h abs、jeq/jge/jgt k、ret k）だけを解釈する。
-func runBPF(t *testing.T, prog []syscall.SockFilter, pkt []byte) uint32 {
+// skfProtocol の読み込みは、パケットの種類 proto を返す。
+func runBPF(t *testing.T, prog []syscall.SockFilter, pkt []byte, proto ...uint32) uint32 {
 	t.Helper()
 	var a uint32
 	for pc := 0; pc < len(prog); pc++ {
 		ins := prog[pc]
+		if ins.Code == syscall.BPF_LD|syscall.BPF_H|syscall.BPF_ABS && ins.K == skfProtocol {
+			a = proto[0]
+			continue
+		}
 		switch ins.Code {
 		case syscall.BPF_LD | syscall.BPF_B | syscall.BPF_ABS:
 			if int(ins.K) >= len(pkt) {
@@ -72,5 +77,29 @@ func TestNDFilter(t *testing.T) {
 		if got := runBPF(t, ndFilter, tc.pkt) != 0; got != tc.pass {
 			t.Errorf("%s を通すか = %v", name, got)
 		}
+		// ブリッジのポートでは、IPv6 のときだけ同じ判定をする。
+		if got := runBPF(t, ndPortFilter(), tc.pkt, syscall.ETH_P_IPV6) != 0; got != tc.pass {
+			t.Errorf("ブリッジのポートで %s を通すか = %v", name, got)
+		}
+		if runBPF(t, ndPortFilter(), tc.pkt, syscall.ETH_P_IP) != 0 {
+			t.Errorf("ブリッジのポートで IPv4 の %s を通した", name)
+		}
+	}
+	arp := ARP{Op: ARPRequest, SenderMAC: macX, SenderIP: netip.MustParseAddr("10.77.0.5"), TargetMAC: make([]byte, 6), TargetIP: netip.MustParseAddr("10.77.0.1")}.Marshal()
+	if runBPF(t, arpPortFilter, arp, syscall.ETH_P_ARP) == 0 || runBPF(t, arpPortFilter, echo, syscall.ETH_P_IPV6) != 0 || runBPF(t, arpPortFilter, arp, syscall.ETH_P_IP) != 0 {
+		t.Error("ブリッジのポートの ARP の絞り込みが違う")
+	}
+}
+
+func TestParseRoute(t *testing.T) {
+	data := []byte("Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n" +
+		"wan0\t00000000\t0100710A\t0003\t0\t0\t0\t00000000\t0\t0\t0\n" +
+		"br0\t0000710A\t00000000\t0001\t0\t0\t0\t00FFFFFF\t0\t0\t0\n" +
+		"br0\t00000000\tFE00710A\t0003\t0\t0\t0\t00000000\t0\t0\t0\n")
+	if a, err := parseRoute(data, "br0"); err != nil || a.String() != "10.113.0.254" {
+		t.Errorf("br0 の既定の経路 = %v %v", a, err)
+	}
+	if _, err := parseRoute(data, "lan0"); err == nil {
+		t.Error("経路のない装置で次の転送先を返した")
 	}
 }

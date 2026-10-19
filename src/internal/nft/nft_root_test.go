@@ -2,6 +2,7 @@ package nft
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"os"
 	"testing"
@@ -74,6 +75,32 @@ func TestScriptsWithRealNFT(t *testing.T) {
 		"障害時に通す": func() (string, error) {
 			return FailOpenScript("lan0", netip.MustParseAddr("10.77.0.1"), netip.MustParseAddrPort("192.0.2.53:53"))
 		},
+		"ブリッジ方式": BridgeRules{Bridge: "br0", LAN: "lan0", WAN: "wan0", ManagementPort: 8443, AdminPorts: []uint16{22}, WANDHCP: true,
+			DNS: netip.MustParseAddr("10.77.0.1"), MAC: net.HardwareAddr{2, 0, 0, 0, 0, 1}, TrustedRouters: []string{"02:00:00:00:00:fe"}}.Script,
+		"ブリッジ方式（DNS なし）": BridgeRules{Bridge: "br0", LAN: "lan0", WAN: "wan0", ManagementPort: 8443}.Script,
+		"ブリッジ方式の外部通信の制御": func() (string, error) {
+			e := testEgress
+			e.Family = Bridge
+			s, err := e.Script()
+			if err != nil {
+				return "", err
+			}
+			m, err := e.MembersScript()
+			add := AddWithTimeoutIn(Bridge, EgressTable, AllowSet(1, 1, false), []netip.Addr{netip.MustParseAddr("192.0.2.10")}, time.Minute)
+			return s + m + add, err
+		},
+		"ブリッジ方式の遮断": func() (string, error) {
+			g := GWIsolation{Family: Bridge, ManagementPort: 8443, MACs: map[string]policy.IsolationLevel{"02:00:00:00:00:21": policy.IsolateManagementAndUpdates},
+				Addrs: map[netip.Addr]policy.IsolationLevel{netip.MustParseAddr("10.77.0.11"): policy.IsolateFull}, Updates: []netip.Prefix{up4}}
+			full, err := g.Script()
+			if err != nil {
+				return "", err
+			}
+			sets, err := g.SetsScript()
+			return full + sets, err
+		},
+		"ブリッジ方式の通信の記録": FlowLog{Family: Bridge, LAN: "lan0", Group: 100}.Script,
+		"ブリッジ方式の脅威情報":  Intel{Family: Bridge, LAN: "lan0", Group: 101, Block: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("2001:db8:bad::/48")}}.Script,
 		"GW の遮断の集合の入れ替え": func() (string, error) {
 			g := GWIsolation{ManagementPort: 8443, MACs: map[string]policy.IsolationLevel{"02:00:00:00:00:21": policy.IsolateManagementAndUpdates}, Updates: []netip.Prefix{up4}}
 			full, err := g.Script()

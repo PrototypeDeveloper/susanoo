@@ -12,6 +12,8 @@ import (
 	"net/netip"
 	"os"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -66,6 +68,64 @@ var ndFilter = []syscall.SockFilter{
 	{Code: syscall.BPF_JMP | syscall.BPF_JEQ | syscall.BPF_K, K: dhcpv6Client, Jf: 1},
 	{Code: syscall.BPF_RET | syscall.BPF_K, K: 0xffff}, // 8: 通す
 	{Code: syscall.BPF_RET | syscall.BPF_K, K: 0},      // 9: 捨てる
+}
+
+// skfProtocol は classic BPF の補助の読み込み（SKF_AD_OFF + SKF_AD_PROTOCOL）。パケットの種類（skb->protocol）を読む。
+const skfProtocol = 0xfffff000
+
+// arpPortFilter は、ARP だけを通す classic BPF（ブリッジのポートで種類を問わずに受け取るとき）。
+var arpPortFilter = []syscall.SockFilter{
+	{Code: syscall.BPF_LD | syscall.BPF_H | syscall.BPF_ABS, K: skfProtocol},
+	{Code: syscall.BPF_JMP | syscall.BPF_JEQ | syscall.BPF_K, K: syscall.ETH_P_ARP, Jf: 1},
+	{Code: syscall.BPF_RET | syscall.BPF_K, K: 0xffff},
+	{Code: syscall.BPF_RET | syscall.BPF_K, K: 0},
+}
+
+// ndPortFilter は、IPv6 のうち ndFilter が通すものだけを通す classic BPF（ブリッジのポートで種類を問わずに受け取るとき）。
+func ndPortFilter() []syscall.SockFilter {
+	prefix := []syscall.SockFilter{
+		{Code: syscall.BPF_LD | syscall.BPF_H | syscall.BPF_ABS, K: skfProtocol},
+		{Code: syscall.BPF_JMP | syscall.BPF_JEQ | syscall.BPF_K, K: syscall.ETH_P_IPV6, Jf: uint8(len(ndFilter) - 1)}, // ndFilter の最後（捨てる）へ
+	}
+	return append(prefix, ndFilter...)
+}
+
+// OpenARPSocketPort は、ブリッジのポート name に入ってくる ARP を受け取るソケットを開く。ブリッジのポートに届いたフレームは
+// ブリッジが受け取るので、種類を指定した（ETH_P_ARP の）ソケットには届かない。種類を問わない（ETH_P_ALL の）ソケットは
+// ブリッジより先にフレームを見られるので、それで受け取り、ARP だけをカーネルで絞り込む。CAP_NET_RAW が必要。
+func OpenARPSocketPort(name string) (*os.File, error) {
+	return openPortSocket(name, "arp", arpPortFilter, false)
+}
+
+// OpenNDSocketPort は OpenNDSocket と同じだが、ブリッジのポート name で受け取る（OpenARPSocketPort を参照）。
+func OpenNDSocketPort(name string) (*os.File, error) {
+	return openPortSocket(name, "nd", ndPortFilter(), true)
+}
+
+func openPortSocket(name, what string, filter []syscall.SockFilter, allmulti bool) (*os.File, error) {
+	ifi, err := net.InterfaceByName(name)
+	if err != nil {
+		return nil, err
+	}
+	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_DGRAM|syscall.SOCK_NONBLOCK|syscall.SOCK_CLOEXEC, 0)
+	if err != nil {
+		return nil, fmt.Errorf("gw: %s のソケットを作れません: %w", what, err)
+	}
+	if err := syscall.AttachLsf(fd, filter); err != nil {
+		syscall.Close(fd)
+		return nil, fmt.Errorf("gw: %s の絞り込みを付けられません: %w", what, err)
+	}
+	if err := syscall.Bind(fd, &syscall.SockaddrLinklayer{Protocol: htons(syscall.ETH_P_ALL), Ifindex: ifi.Index}); err != nil {
+		syscall.Close(fd)
+		return nil, err
+	}
+	if allmulti {
+		if err := allMulticast(fd, ifi.Index); err != nil {
+			syscall.Close(fd)
+			return nil, fmt.Errorf("gw: マルチキャストを受け取れません: %w", err)
+		}
+	}
+	return os.NewFile(uintptr(fd), what), nil
 }
 
 // OpenNDSocket は、インターフェース name の IPv6 の近隣探索と、DHCPv6 のクライアントのポートへの UDP だけを受け取る
@@ -164,6 +224,34 @@ func InterfacePrefix6(name string) (netip.Addr, netip.Prefix, error) {
 	return netip.Addr{}, netip.Prefix{}, fmt.Errorf("gw: %s にリンクローカルでない IPv6 アドレスがありません", name)
 }
 
+// DefaultGateway4 は、インターフェース name を通る IPv4 の既定の経路の次の転送先を返す（/proc/net/route）。権限は要らない。
+// ブリッジ方式で、上流のルーターのアドレス（なりすましを検知する）を決めるのに使う。
+func DefaultGateway4(name string) (netip.Addr, error) {
+	data, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	return parseRoute(data, name)
+}
+
+// parseRoute は /proc/net/route の中身から、name の既定の経路の次の転送先を取り出す。
+func parseRoute(data []byte, name string) (netip.Addr, error) {
+	for i, line := range strings.Split(string(data), "\n") {
+		f := strings.Fields(line)
+		if i == 0 || len(f) < 3 || f[0] != name || f[1] != "00000000" {
+			continue
+		}
+		v, err := strconv.ParseUint(f[2], 16, 32)
+		if err != nil || v == 0 {
+			continue
+		}
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(v)) // カーネルのバイト順（x86 と arm64 ではリトルエンディアン）
+		return netip.AddrFrom4(b), nil
+	}
+	return netip.Addr{}, fmt.Errorf("gw: %s を通る既定の経路がありません", name)
+}
+
 // Addrs6Cache は、インターフェースの IPv6 アドレスを、間をおいて読み直しながら返す。
 type Addrs6Cache struct {
 	Name  string
@@ -256,8 +344,12 @@ func InterfaceAddr(name string) (netip.Addr, netip.Prefix, net.HardwareAddr, err
 
 // NewLAN は、OpenARPSocket で開いたソケット f を使って、インターフェース name の LAN を作る。
 // GW のアドレスとネットワークは、インターフェースの最初の IPv4 アドレスから決める。f は非ブロッキングであること。
-func NewLAN(name string, f *os.File) (*LAN, error) {
-	ifi, err := net.InterfaceByName(name)
+func NewLAN(name string, f *os.File) (*LAN, error) { return NewLANOn(name, name, f) }
+
+// NewLANOn は NewLAN と同じだが、ソケットを結び付けた装置 port と、GW のアドレスを持つ装置 name を分ける。
+// ブリッジ方式では、LAN 側のポートで監視し（LAN から入るものだけを見る）、アドレスはブリッジのものを使う。
+func NewLANOn(port, name string, f *os.File) (*LAN, error) {
+	ifi, err := net.InterfaceByName(port)
 	if err != nil {
 		return nil, err
 	}

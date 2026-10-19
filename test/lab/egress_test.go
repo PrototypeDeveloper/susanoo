@@ -30,7 +30,7 @@ import (
 //	http:アドレス:ポート:Host       平文の HTTP の要求を送る
 //	sink:アドレス                  接続を受け付け、相手が閉じるまで保つサーバー
 //	hold:アドレス:ポート:秒         接続し、その秒数だけ保つ
-//	ctflush                       この名前空間の conntrack の表（IPv4）を消す
+//	ctflush                       この名前空間の conntrack の表（IPv4。「ctflush:6」なら IPv6）を消す
 //	beacon:アドレス:ポート:回数:ミリ秒  決まった間隔で接続と切断を繰り返す（周期的な通信の再現）
 //	upload:アドレス:ポート:バイト数    接続して、その量を送る
 //	arpscan:インターフェース:送信元:最初のアドレス:数  続いたアドレスを ARP で探す（LAN 内のスキャンの再現）
@@ -50,8 +50,9 @@ var extraHelpers = map[string]func(string) int{
 	"ctflush":  ctFlush,
 }
 
-// ctFlush は、この名前空間の conntrack の表（IPv4）を消す。消した接続の終わりのイベントはすぐに出る。
-func ctFlush(string) int {
+// ctFlush は、この名前空間の conntrack の表（IPv4。arg が「6」なら IPv6）を消す。消した接続の終わりのイベントはすぐに出る
+// （消さないと、期限の切れた接続はカーネルが間をおいて回収するときにイベントになるので、いつ出るか分からない）。
+func ctFlush(arg string) int {
 	fd, err := syscall.Socket(syscall.AF_NETLINK, syscall.SOCK_RAW|syscall.SOCK_CLOEXEC, syscall.NETLINK_NETFILTER)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -67,6 +68,9 @@ func ctFlush(string) int {
 	binary.NativeEndian.PutUint16(msg[6:8], syscall.NLM_F_REQUEST|syscall.NLM_F_ACK)
 	binary.NativeEndian.PutUint32(msg[8:12], 1)
 	msg[16] = syscall.AF_INET
+	if arg == "6" {
+		msg[16] = syscall.AF_INET6
+	}
 	if err := syscall.Sendto(fd, msg, 0, &syscall.SockaddrNetlink{Family: syscall.AF_NETLINK}); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

@@ -386,8 +386,8 @@ type listingRecorder struct {
 	sets map[string][]nft.Element
 }
 
-func (r *listingRecorder) ListSet(_ context.Context, table, set string) ([]nft.Element, error) {
-	if table != nft.EgressTable {
+func (r *listingRecorder) ListSetIn(_ context.Context, fam nft.Family, table, set string) ([]nft.Element, error) {
+	if table != nft.EgressTable || fam.String() != "inet" {
 		return nil, errors.New("知らないテーブル")
 	}
 	return r.sets[set], nil
@@ -434,5 +434,29 @@ func TestReconfigureKeepsLearned(t *testing.T) {
 	}
 	if v := e.Decide(pcStrict, dns.Question{Name: "allowed.test", Type: dns.TypeA}); v.Action != dns.Forward || v.Learn == nil {
 		t.Errorf("残した許可の名前の判断 = %+v", v)
+	}
+}
+
+// ブリッジ方式では bridge のテーブルを作り、DNS で得たアドレスも bridge のテーブルに入れる。停止中は外部通信の制御のテーブルを消すだけ。
+func TestBridgeFamily(t *testing.T) {
+	r := &recorder{}
+	e, err := New(Config{Policy: testPolicy, LAN: "lan0", Family: nft.Bridge, NFT: r, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := e.Apply(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Learn(ctx, Target{Group: 1, Specs: []int{0}}, []netip.Addr{netip.MustParseAddr("192.0.2.10")}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.FailOpen(ctx, netip.MustParseAddrPort("192.0.2.53:53")); err != nil {
+		t.Fatal(err)
+	}
+	all := strings.Join(r.all(), "\n")
+	if !strings.Contains(all, "table bridge susanoo_egress {\n") || !strings.Contains(all, "add element bridge susanoo_egress g1_a0_d4 { 192.0.2.10") ||
+		strings.Contains(all, "inet") || strings.Contains(all, "dnat") {
+		t.Errorf("スクリプト:\n%s", all)
 	}
 }

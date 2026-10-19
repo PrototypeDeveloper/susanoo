@@ -21,6 +21,7 @@ const EgressTable = "susanoo_egress"
 // 許可は、静的な CIDR の集合と、DNS で得たアドレスを有効期限付きで入れる集合の両方で照合する。
 // DNS が有効なら、LAN から外部の DNS サーバーへの問い合わせを GW のリゾルバに向け直す（G3）。
 type Egress struct {
+	Family Family // テーブルの種類（空なら inet）。bridge なら LAN はブリッジの LAN 側のポート
 	LAN    string
 	DNS    netip.Addr     // GW の LAN 側のアドレス。無効なら DNS を向け直さない
 	DNS6   netip.Addr     // GW の LAN 側の IPv6 アドレス。有効なら IPv6 の DNS も向け直す
@@ -58,6 +59,9 @@ func ipSuffix(v6 bool) string {
 }
 
 func (e Egress) validate() error {
+	if err := e.Family.valid(); err != nil {
+		return err
+	}
 	if !ifacePattern.MatchString(e.LAN) {
 		return fmt.Errorf("nft: インターフェースの名前 %q が不正です", e.LAN)
 	}
@@ -87,8 +91,8 @@ func (e Egress) Script() (string, error) {
 		return "", err
 	}
 	var b strings.Builder
-	b.WriteString(replaceTable(EgressTable))
-	fmt.Fprintf(&b, "table inet %s {\n", EgressTable)
+	b.WriteString(replaceTableIn(e.Family, EgressTable))
+	fmt.Fprintf(&b, "table %s %s {\n", e.Family, EgressTable)
 
 	doh4, doh6 := splitPrefixes(e.DoH)
 	writeSet(&b, "doh_4", "ipv4_addr", true, doh4)
@@ -127,12 +131,14 @@ func (e Egress) Script() (string, error) {
 		writeRegularChain(&b, fmt.Sprintf("g%d", i), groupRules(i, g))
 	}
 	var dns []string
-	if e.DNS.Is4() {
+	if e.Family == Bridge {
+		// bridge のテーブルでは DNAT できないので、DNS の向け直しはブリッジ方式のテーブル（Bridge）で行う。
+	} else if e.DNS.Is4() {
 		dns = append(dns,
 			fmt.Sprintf("iifname %q ip daddr != %s udp dport 53 dnat ip to %s:53", e.LAN, e.DNS, e.DNS),
 			fmt.Sprintf("iifname %q ip daddr != %s tcp dport 53 dnat ip to %s:53", e.LAN, e.DNS, e.DNS))
 	}
-	if e.DNS6.Is6() && !e.DNS6.Is4In6() && e.DNS6.Zone() == "" {
+	if e.Family != Bridge && e.DNS6.Is6() && !e.DNS6.Is4In6() && e.DNS6.Zone() == "" {
 		dns = append(dns,
 			fmt.Sprintf("iifname %q ip6 daddr != %s udp dport 53 dnat ip6 to [%s]:53", e.LAN, e.DNS6, e.DNS6),
 			fmt.Sprintf("iifname %q ip6 daddr != %s tcp dport 53 dnat ip6 to [%s]:53", e.LAN, e.DNS6, e.DNS6))
@@ -208,9 +214,9 @@ func (e Egress) MembersScript() (string, error) {
 			return "", err
 		}
 		set := fmt.Sprintf("g%d_m", i)
-		fmt.Fprintf(&b, "flush set inet %s %s\n", EgressTable, set)
+		fmt.Fprintf(&b, "flush set %s %s %s\n", e.Family, EgressTable, set)
 		if len(macs) > 0 {
-			fmt.Fprintf(&b, "add element inet %s %s { %s }\n", EgressTable, set, strings.Join(macs, ", "))
+			fmt.Fprintf(&b, "add element %s %s %s { %s }\n", e.Family, EgressTable, set, strings.Join(macs, ", "))
 		}
 	}
 	return b.String(), nil
@@ -219,6 +225,11 @@ func (e Egress) MembersScript() (string, error) {
 // AddWithTimeout は、集合に有効期限付きでアドレスを加えるスクリプトを返す。既にあれば期限を延ばす。
 // 「加える → 消す → 加える」を 1 回の nft -f で行い、要素の有無にかかわらず失敗しないようにする。
 func AddWithTimeout(table, set string, addrs []netip.Addr, timeout time.Duration) string {
+	return AddWithTimeoutIn(Inet, table, set, addrs, timeout)
+}
+
+// AddWithTimeoutIn は AddWithTimeout と同じだが、テーブルの種類 fam を指定する。
+func AddWithTimeoutIn(fam Family, table, set string, addrs []netip.Addr, timeout time.Duration) string {
 	secs := max(int(timeout/time.Second), 1)
 	var elems, plain []string
 	for _, a := range addrs {
@@ -230,8 +241,8 @@ func AddWithTimeout(table, set string, addrs []netip.Addr, timeout time.Duration
 		return ""
 	}
 	e, p := strings.Join(elems, ", "), strings.Join(plain, ", ")
-	return fmt.Sprintf("add element inet %[1]s %[2]s { %[3]s }\ndelete element inet %[1]s %[2]s { %[4]s }\nadd element inet %[1]s %[2]s { %[3]s }\n",
-		table, set, e, p)
+	return fmt.Sprintf("add element %[5]s %[1]s %[2]s { %[3]s }\ndelete element %[5]s %[1]s %[2]s { %[4]s }\nadd element %[5]s %[1]s %[2]s { %[3]s }\n",
+		table, set, e, p, fam)
 }
 
 // FailOpenScript は障害時に通信を通す（fail_open）ときのテーブルを返す。外部通信の制御をやめ、

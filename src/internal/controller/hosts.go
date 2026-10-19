@@ -15,6 +15,15 @@ import (
 // spoofInterval の間は、同じ機器のなりすましを 1 回だけ検知結果にする。
 const spoofInterval = time.Minute
 
+// ipv4OwnerWindow の間に ARP で名乗られたアドレスは、DHCP で割り当てていなくても、その機器のものとみなす
+// （ブリッジ方式では GW が DHCP を動かさないため、割り当ての記録がない）。
+const ipv4OwnerWindow = 5 * time.Minute
+
+// LANGateways は、GW のアドレスのほかに、なりすましを検知するゲートウェイのアドレス（ブリッジ方式の上流のルーター）を返せる LAN。
+type LANGateways interface {
+	Gateways() []netip.Addr
+}
+
 // ObserveLease は DHCP の割り当てと解放を台帳に反映する（DHCP サーバーから呼ぶ）。
 func (c *Controller) ObserveLease(mac string, ip netip.Addr, hostname string, expiry time.Time, released bool) {
 	now := c.now()
@@ -58,14 +67,21 @@ func (c *Controller) ObserveNeighbor(frame net.HardwareAddr, senderIP netip.Addr
 	now := c.now()
 	var reason, typ string
 
+	var gateways []netip.Addr
+	if g, ok := lan.(LANGateways); ok {
+		gateways = g.Gateways()
+	}
 	c.mu.Lock()
 	h, isNew := c.hostLocked(mac, now)
 	h.LastSeen = now
 	c.dirty = true
 	if senderIP.Is4() && !senderIP.IsUnspecified() && lan.Prefix().Contains(senderIP) {
 		owner := c.leaseOwnerLocked(senderIP, now)
+		if owner == "" {
+			owner = c.arpOwnerLocked(senderIP, now)
+		}
 		switch {
-		case senderIP == lan.Addr():
+		case senderIP == lan.Addr() || slices.Contains(gateways, senderIP):
 			reason, typ = ReasonGatewaySpoofing, event.FindingTypeGatewaySpoofing
 		case owner != "" && owner != mac:
 			reason, typ = ReasonIPSpoofing, event.FindingTypeIPSpoofing
@@ -163,6 +179,20 @@ func (c *Controller) backLocked(h *host, now time.Time) {
 	d.Away, d.Lost, d.LastSeen = false, false, now.Add(c.cfg.HeartbeatTimeout)
 	c.saveLocked()
 	c.log.Info("不在だった端末が LAN に戻りました。ハートビートの確認を再開します", "端末", d.ID)
+}
+
+// arpOwnerLocked は、DHCP で割り当てていない ip を ipv4OwnerWindow の間に名乗った機器の MAC アドレスを返す。なければ空。
+func (c *Controller) arpOwnerLocked(ip netip.Addr, now time.Time) string {
+	var found *host
+	for _, h := range c.hosts {
+		if h.IP == ip && now.Sub(h.LastSeen) < ipv4OwnerWindow && (found == nil || h.LastSeen.After(found.LastSeen)) {
+			found = h
+		}
+	}
+	if found == nil {
+		return ""
+	}
+	return found.MAC
 }
 
 // leaseOwnerLocked は ip を割り当て中の機器の MAC アドレスを返す。なければ空。

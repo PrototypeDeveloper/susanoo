@@ -8,12 +8,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"susanoo/internal/api"
 	"susanoo/internal/config"
+	"susanoo/internal/nft"
 	"susanoo/internal/pki"
 	"susanoo/internal/policy"
 )
@@ -68,6 +70,15 @@ func TestExampleConfigs(t *testing.T) {
 	}
 	if g.Notify == nil || len(g.Notify.Destinations) != 3 || g.Notify.Validate() != nil {
 		t.Errorf("通知の例 = %+v（%v）", g.Notify, g.Notify.Validate())
+	}
+	var b gwConfig
+	if err := config.Load(filepath.Join(dir, "gw-bridge.example.json"), &b); err != nil {
+		t.Error(err)
+	}
+	if side := b.lanSide(); side == nil || side.Bridge == nil || side.Port != "enp2s0" || side.AddrIface != "br0" || b.Router != nil || b.DHCP != nil {
+		t.Errorf("ブリッジ方式の例 = %+v", b.Bridge)
+	} else if gws, err := side.gateways(); err != nil || len(gws) != 1 || gws[0].String() != "192.168.0.1" {
+		t.Errorf("ブリッジ方式の上流のルーター = %v %v", gws, err)
 	}
 	var c clientConfig
 	if err := config.Load(filepath.Join(dir, "client.example.json"), &c); err != nil {
@@ -382,5 +393,68 @@ func TestGWConfigRequiresRouterForDHCP(t *testing.T) {
 	code, _, stderr := runCmd(t, "gw", "-config", filepath.Join(dir, "gw.json"))
 	if code != exitError || !strings.Contains(stderr, "router の設定が必要") {
 		t.Errorf("終了コード = %d, %s", code, stderr)
+	}
+}
+
+// ブリッジ方式の設定の誤りは、起動する前に断る。
+func TestGWBridgeConfigErrors(t *testing.T) {
+	bridge := map[string]any{"name": "br0", "lan": "lan0", "wan": "wan0"}
+	for name, tc := range map[string]struct {
+		extra map[string]any
+		want  string
+	}{
+		"ルーター方式と一緒":     {map[string]any{"bridge": bridge, "router": map[string]any{"lan": "lan0", "wan": "wan0"}}, "一緒に使えません"},
+		"DHCP を使う":      {map[string]any{"bridge": bridge, "dhcp": map[string]any{"range": "10.0.0.100-10.0.0.199"}}, "dhcp を使えません"},
+		"ポートがない":        {map[string]any{"bridge": map[string]any{"name": "br0", "lan": "lan0"}}, "name、lan、wan"},
+		"上流のルーターが IPv6": {map[string]any{"bridge": map[string]any{"name": "br0", "lan": "lan0", "wan": "wan0", "gateway": "fe80::1"}}, "IPv4 のアドレス"},
+		"認めるルーターが不正":    {map[string]any{"bridge": map[string]any{"name": "br0", "lan": "lan0", "wan": "wan0", "trusted_routers": []string{"x"}}}, "bridge.trusted_routers"},
+		"DNS だけ":        {map[string]any{"dns": map[string]any{"upstreams": []map[string]any{{"address": "192.0.2.53:53"}}}}, "router か bridge"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := map[string]any{"listen": "127.0.0.1:8443", "pki_dir": "controller", "state_dir": "state", "policy": "policy.json"}
+			for k, v := range tc.extra {
+				cfg[k] = v
+			}
+			writeJSON(t, filepath.Join(dir, "gw.json"), cfg)
+			code, _, stderr := runCmd(t, "gw", "-config", filepath.Join(dir, "gw.json"))
+			if code != exitError || !strings.Contains(stderr, tc.want) {
+				t.Errorf("終了コード = %d, %s", code, stderr)
+			}
+		})
+	}
+}
+
+// LAN の側の設定は、ルーター方式でもブリッジ方式でも、もう一方の設定を読まずに答える。
+func TestLANSide(t *testing.T) {
+	ports := []uint16{2222}
+	for name, tc := range map[string]struct {
+		cfg                gwConfig
+		port, addr         string
+		admin              []uint16
+		trusted            int
+		probe              time.Duration
+		bridge, hasGateway bool
+	}{
+		"ルーター方式（既定）": {cfg: gwConfig{Router: &routerConfig{LAN: "lan0", WAN: "wan0"}}, port: "lan0", addr: "lan0", admin: []uint16{22}, probe: defaultNDProbe},
+		"ルーター方式": {cfg: gwConfig{Router: &routerConfig{LAN: "lan0", WAN: "wan0", AdminPorts: &ports, TrustedRouters: []string{"02:00:00:00:00:01"}, NDProbe: config.Duration(time.Minute)}},
+			port: "lan0", addr: "lan0", admin: ports, trusted: 1, probe: time.Minute},
+		"ブリッジ方式（既定）": {cfg: gwConfig{Bridge: &bridgeConfig{Name: "br0", LAN: "lan0", WAN: "wan0", Gateway: "10.77.0.254"}}, port: "lan0", addr: "br0", admin: []uint16{22},
+			probe: defaultNDProbe, bridge: true, hasGateway: true},
+		"ブリッジ方式": {cfg: gwConfig{Bridge: &bridgeConfig{Name: "br0", LAN: "lan0", WAN: "wan0", Gateway: "10.77.0.254", AdminPorts: &ports, TrustedRouters: []string{"02:00:00:00:00:01"}, NDProbe: config.Duration(time.Minute)}},
+			port: "lan0", addr: "br0", admin: ports, trusted: 1, probe: time.Minute, bridge: true, hasGateway: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := tc.cfg.lanSide()
+			trusted, err := s.trustedRouters()
+			gws, err2 := s.gateways()
+			if s.Port != tc.port || s.AddrIface != tc.addr || !slices.Equal(s.adminPorts(), tc.admin) || len(trusted) != tc.trusted || err != nil ||
+				s.ndProbe() != tc.probe || (s.Family == nft.Bridge) != tc.bridge || (len(gws) == 1) != tc.hasGateway || err2 != nil {
+				t.Errorf("= %+v、管理用のポート %v、認めるルーター %v %v、間隔 %v、上流 %v %v", s, s.adminPorts(), trusted, err, s.ndProbe(), gws, err2)
+			}
+		})
+	}
+	if (gwConfig{}).lanSide() != nil {
+		t.Error("方式のない設定で LAN の側を返した")
 	}
 }

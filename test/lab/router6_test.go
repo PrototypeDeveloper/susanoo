@@ -98,6 +98,9 @@ func TestIPv6Router(t *testing.T) {
 	waitFor(t, "機器の台帳の IPv6 アドレス", 10*time.Second, func() bool {
 		return strings.Contains(strings.Join(l.hosts()[pc1.mac].IPv6, ","), addr1)
 	})
+	if ok, out := runHelper(t, nsGW, "ctflush:6"); !ok { // 接続の終わりのイベントをすぐに出させる
+		t.Fatalf("conntrack の表を消せません: %s", out)
+	}
 	waitFor(t, "IPv6 の通信の記録", 15*time.Second, func() bool {
 		return eventLine(l.events(), `"class_uid":4001`, `"ip":"2001:db8:113::2"`, `"port":8080`, `"ip":"`+addr1+`"`)
 	})

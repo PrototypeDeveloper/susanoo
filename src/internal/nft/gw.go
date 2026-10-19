@@ -20,6 +20,7 @@ import (
 // LAN から届く通信は MAC アドレスで止まる。management_and_updates の端末には GW の DNS を許可し、
 // ドメインで指定した更新サーバーのアドレスは、DNS で解決したときに UpdatesDynamicSet に入れる。
 type GWIsolation struct {
+	Family         Family                               // テーブルの種類（空なら inet。ブリッジ方式は bridge）
 	ManagementPort uint16                               // GW 上の CONTROLLER の待ち受けポート（TCP）
 	Addrs          map[netip.Addr]policy.IsolationLevel // アドレスで遮断する端末と段階
 	MACs           map[string]policy.IsolationLevel     // MAC アドレスで遮断する端末と段階
@@ -67,10 +68,10 @@ func (g GWIsolation) SetsScript() (string, error) {
 	}
 	var b strings.Builder
 	for _, s := range staticSets() {
-		fmt.Fprintf(&b, "flush set inet %s %s\n", GWTable, s[0])
+		fmt.Fprintf(&b, "flush set %s %s %s\n", g.Family, GWTable, s[0])
 		if elems := members[s[0]]; len(elems) > 0 {
 			slices.Sort(elems)
-			fmt.Fprintf(&b, "add element inet %s %s { %s }\n", GWTable, s[0], strings.Join(slices.Compact(elems), ", "))
+			fmt.Fprintf(&b, "add element %s %s %s { %s }\n", g.Family, GWTable, s[0], strings.Join(slices.Compact(elems), ", "))
 		}
 	}
 	return b.String(), nil
@@ -121,14 +122,17 @@ func (g GWIsolation) Script() (string, error) {
 	if g.ManagementPort == 0 {
 		return "", fmt.Errorf("nft: 管理通信のポートがありません")
 	}
+	if err := g.Family.valid(); err != nil {
+		return "", err
+	}
 	members, err := g.members()
 	if err != nil {
 		return "", err
 	}
 
 	var b strings.Builder
-	b.WriteString(replaceTable(GWTable))
-	fmt.Fprintf(&b, "table inet %s {\n", GWTable)
+	b.WriteString(replaceTableIn(g.Family, GWTable))
+	fmt.Fprintf(&b, "table %s %s {\n", g.Family, GWTable)
 	for _, s := range staticSets() {
 		writeSet(&b, s[0], s[1], s[2] == "interval", members[s[0]])
 	}
@@ -136,6 +140,10 @@ func (g GWIsolation) Script() (string, error) {
 	writeTimeoutSet(&b, UpdatesDynamicSet(true), "ipv6_addr")
 
 	var input, forward []string
+	if g.Family == Bridge {
+		// bridge のテーブルの input には ARP も届く。隔離した機器が GW の管理通信と DHCP を使えるよう、ARP は通す。
+		input = append(input, "meta protocol arp accept")
+	}
 	// 送信元は、アドレス（IPv4、IPv6）と MAC アドレスのそれぞれで照合する。
 	// MAC アドレスで照合できるのは、LAN から届く通信だけ。
 	for _, m := range []struct{ key, sfx string }{{"ip saddr", "_v4"}, {"ip6 saddr", "_v6"}, {"ether saddr", "_mac"}} {

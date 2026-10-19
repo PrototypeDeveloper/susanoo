@@ -2,6 +2,7 @@ package nft
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -459,5 +460,58 @@ func TestAppControlScript(t *testing.T) {
 	}
 	if _, err := (AppControl{}).Script(); err == nil {
 		t.Error("NFQUEUE の番号がないのにスクリプトを作った")
+	}
+}
+
+// ブリッジ方式では、GW 自身への通信をポートで絞り、LAN の DNS を GW に上げて向け直し、LAN からの RA と DHCPv6 を通さない。
+func TestBridgeScript(t *testing.T) {
+	r := BridgeRules{Bridge: "br0", LAN: "lan0", WAN: "wan0", ManagementPort: 8443, AdminPorts: []uint16{22}, DNS: netip.MustParseAddr("10.77.0.1"),
+		MAC: net.HardwareAddr{2, 0, 0, 0, 0, 1}, TrustedRouters: []string{"02:00:00:00:00:FE"}}
+	got, err := r.Script()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"table bridge susanoo_bridge {}\ndelete table bridge susanoo_bridge\ntable inet susanoo_bridge {}\ndelete table inet susanoo_bridge\n",
+		"\t\tiifname \"lan0\" ip daddr != 10.77.0.1 meta l4proto { tcp, udp } th dport 53 meta pkttype set host ether daddr set 02:00:00:00:00:01\n",
+		"\t\tmeta protocol arp accept\n\t\tct state established,related accept\n",
+		"\t\tiifname \"lan0\" tcp dport 8443 accept\n",
+		"\t\tiifname \"lan0\" tcp dport { 22 } accept\n\t\tmeta protocol { ip, ip6 } drop\n",
+		"\t\telements = { 02:00:00:00:00:fe }\n",
+		"\t\tiifname \"lan0\" ether saddr != @trusted_routers icmpv6 type nd-router-advert drop\n",
+		"\t\tiifname \"lan0\" meta protocol ip6 meta l4proto { tcp, udp } th dport 53 drop\n",
+		"\t\tiifname \"br0\" ip daddr != 10.77.0.1 udp dport 53 dnat ip to 10.77.0.1:53\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("%q がない\n%s", want, got)
+		}
+	}
+	// DNS を向け直さないときは、GW へ上げず、DNS を受け付けず、inet のテーブルを作らない。
+	plain, _ := BridgeRules{Bridge: "br0", LAN: "lan0", WAN: "wan0", ManagementPort: 8443}.Script()
+	if strings.Contains(plain, "pkttype") || strings.Contains(plain, "dport 53") || strings.Contains(plain, "table inet susanoo_bridge {\n") {
+		t.Errorf("DNS なしのスクリプト:\n%s", plain)
+	}
+	for _, bad := range []BridgeRules{
+		{Bridge: "br0", LAN: "lan0", WAN: "lan0", ManagementPort: 8443},
+		{Bridge: "br0", LAN: "lan0", WAN: "wan0"},
+		{Bridge: "br0", LAN: "lan0", WAN: "wan0", ManagementPort: 8443, DNS: netip.MustParseAddr("10.77.0.1")},
+		{Bridge: "br 0", LAN: "lan0", WAN: "wan0", ManagementPort: 8443},
+	} {
+		if _, err := bad.Script(); err == nil {
+			t.Errorf("不正な設定を受け付けた: %+v", bad)
+		}
+	}
+	// bridge のテーブルの外部通信の制御は、DNAT を使わない。
+	e := testEgress
+	e.Family = Bridge
+	s, err := e.Script()
+	if err != nil || !strings.Contains(s, "table bridge susanoo_egress {\n") || strings.Contains(s, "dnat") {
+		t.Errorf("bridge の外部通信の制御 = %v\n%s", err, s)
+	}
+	if add := AddWithTimeoutIn(Bridge, EgressTable, "g0_a0_d4", []netip.Addr{netip.MustParseAddr("192.0.2.1")}, time.Minute); !strings.HasPrefix(add, "add element bridge susanoo_egress g0_a0_d4 { 192.0.2.1 timeout 60s }") {
+		t.Errorf("bridge の要素の追加 = %s", add)
+	}
+	if s, _ := (GWIsolation{Family: Bridge, ManagementPort: 8443}).Script(); !strings.Contains(s, "table bridge susanoo_gw {\n") || !strings.Contains(s, "\t\tmeta protocol arp accept\n") {
+		t.Errorf("bridge の遮断:\n%s", s)
 	}
 }

@@ -65,6 +65,7 @@ type Config struct {
 	LAN    string     // LAN 側のインターフェース
 	DNS    netip.Addr // GW の LAN 側のアドレス。有効なら LAN の DNS を GW のリゾルバに向け直す
 	DNS6   netip.Addr // GW の LAN 側の IPv6 アドレス。有効なら LAN の IPv6 の DNS も向け直す
+	Family nft.Family // nftables のテーブルの種類（空なら inet。ブリッジ方式は bridge で、LAN はブリッジの LAN 側のポート）
 	NFT    nft.Runner // nftables に直接反映する（執行部、または権限を分けないとき）
 	Remote Enforcer   // 判断だけを行い、反映は Remote に任せる（非特権の側）
 	// OnLearn は、学習モードで通した名前（blocked が false）と、遮断した名前（true）を知らせる。
@@ -111,7 +112,7 @@ type Engine struct {
 // SetLister は集合の中身を読める nft.Runner（nft.Command が満たす）。ポリシーを切り替えるとき、
 // DNS で得たアドレスを引き継ぐのに使う。
 type SetLister interface {
-	ListSet(ctx context.Context, table, set string) ([]nft.Element, error)
+	ListSetIn(ctx context.Context, fam nft.Family, table, set string) ([]nft.Element, error)
 }
 
 var _ Enforcer = (*Engine)(nil)
@@ -211,7 +212,7 @@ func compile(pg policy.Group) (*group, error) {
 // rules は現在の所属で nftables のルールを作る。
 func (e *Engine) rules() nft.Egress {
 	m := e.members.Load()
-	r := nft.Egress{LAN: e.cfg.LAN, DNS: e.cfg.DNS, DNS6: e.cfg.DNS6, DoH: DoHServers}
+	r := nft.Egress{Family: e.cfg.Family, LAN: e.cfg.LAN, DNS: e.cfg.DNS, DNS6: e.cfg.DNS6, DoH: DoHServers}
 	for i, g := range e.comp.Load().groups {
 		ng := nft.EgressGroup{Name: g.name, Default: g.def, Bypass: g.bypass, Allow: g.specs, Deny: g.denyNet}
 		if i > 0 {
@@ -313,7 +314,7 @@ func (e *Engine) Reconfigure(ctx context.Context, p *policy.Policy) error {
 		for si, key := range g.specKeys {
 			for v6, elems := range learned[g.name+"\x00"+key] {
 				for _, el := range elems {
-					b.WriteString(nft.AddWithTimeout(nft.EgressTable, nft.AllowSet(gi, si, v6), []netip.Addr{el.Addr}, el.Expires))
+					b.WriteString(nft.AddWithTimeoutIn(e.cfg.Family, nft.EgressTable, nft.AllowSet(gi, si, v6), []netip.Addr{el.Addr}, el.Expires))
 				}
 			}
 		}
@@ -340,7 +341,7 @@ func (e *Engine) learnedLocked(ctx context.Context) map[string]map[bool][]nft.El
 		}
 		for si, key := range g.specKeys {
 			for _, v6 := range []bool{false, true} {
-				elems, err := lister.ListSet(ctx, nft.EgressTable, nft.AllowSet(gi, si, v6))
+				elems, err := lister.ListSetIn(ctx, e.cfg.Family, nft.EgressTable, nft.AllowSet(gi, si, v6))
 				if err != nil {
 					continue
 				}
@@ -366,6 +367,10 @@ func (e *Engine) FailOpen(ctx context.Context, upstream netip.AddrPort) error {
 		return errRemote
 	}
 	script, err := nft.FailOpenScript(e.cfg.LAN, e.cfg.DNS, upstream)
+	if e.cfg.Family == nft.Bridge {
+		// ブリッジ方式の DNS の向け直しは BridgeRules が行うので、ここでは外部通信の制御をやめるだけ。
+		script, err = nft.DeleteTableIn(nft.Bridge, nft.EgressTable), nil
+	}
 	if err != nil {
 		return err
 	}
@@ -505,10 +510,10 @@ func (e *Engine) Learn(ctx context.Context, t Target, ips []netip.Addr, ttl time
 	}
 	var b strings.Builder
 	for _, s := range sets4 {
-		b.WriteString(nft.AddWithTimeout(table, s, v4, timeout))
+		b.WriteString(nft.AddWithTimeoutIn(e.cfg.Family, table, s, v4, timeout))
 	}
 	for _, s := range sets6 {
-		b.WriteString(nft.AddWithTimeout(table, s, v6, timeout))
+		b.WriteString(nft.AddWithTimeoutIn(e.cfg.Family, table, s, v6, timeout))
 	}
 	if b.Len() == 0 {
 		return nil

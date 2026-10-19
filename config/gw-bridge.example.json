@@ -1,0 +1,32 @@
+{
+  "listen": "192.168.0.2:8443",
+  "pki_dir": "/etc/susanoo/controller",
+  "state_dir": "/var/lib/susanoo/gw",
+  "policy": "/etc/susanoo/policy.json",
+  "heartbeat_timeout": "30s",
+  "nft": "/usr/sbin/nft",
+  "bridge": {
+    "name": "br0",
+    "lan": "enp2s0",
+    "wan": "enp1s0",
+    "gateway": "192.168.0.1",
+    "wan_dhcp": false,
+    "admin_ports": [
+      22
+    ],
+    "trusted_routers": [],
+    "nd_probe_interval": "5m"
+  },
+  "dns": {
+    "upstreams": [
+      {
+        "address": "192.168.0.1:53"
+      }
+    ],
+    "log_queries": true
+  },
+  "flow_log": true,
+  "privilege_separation": true,
+  "controller_user": "susanoo-ctl",
+  "lan_user": "susanoo-net"
+}

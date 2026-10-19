@@ -75,6 +75,11 @@ var gwLinkLocal = netip.MustParseAddr("fe80::fe")
 
 func (l *fakeLAN) Addrs6() []netip.Addr { return []netip.Addr{gwLinkLocal} }
 
+// upstreamRouter は試験のブリッジ方式の上流のルーターのアドレス（fakeLAN の Gateways）。
+var upstreamRouter = netip.MustParseAddr("127.0.0.253")
+
+func (l *fakeLAN) Gateways() []netip.Addr { return []netip.Addr{upstreamRouter} }
+
 func (l *fakeLAN) WithdrawRA(_ context.Context, src netip.Addr, mac net.HardwareAddr, prefixes []netip.Prefix, rdnss []netip.Addr) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
