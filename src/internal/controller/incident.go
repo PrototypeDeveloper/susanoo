@@ -23,6 +23,7 @@ import (
 	"susanoo/internal/event"
 	"susanoo/internal/notify"
 	"susanoo/internal/pki"
+	"susanoo/internal/store"
 )
 
 // インシデント対応の支援（M9）。
@@ -608,7 +609,21 @@ func (c *Controller) timeline(devices []string, incID string, since, until time.
 		}
 		return slices.ContainsFunc(devices, func(d string) bool { return eventOf(&e, d) })
 	}
-	lines, err := c.events.Query(since, maxTimelineEvents+1, match)
+	flt := store.Filter{Since: since, Until: until}
+	var tags []string
+	indexed := true
+	for _, d := range devices {
+		tag, ok := deviceTag(d)
+		indexed = indexed && ok
+		tags = append(tags, tag)
+	}
+	if indexed && len(tags) > 0 {
+		flt.Tags = append(flt.Tags, tags)
+	}
+	if !all {
+		flt.Tags = append(flt.Tags, []string{classTag(event.ClassDetectionFinding)})
+	}
+	lines, err := c.events.Query(flt, maxTimelineEvents+1, match)
 	if err != nil {
 		return nil, false, err
 	}

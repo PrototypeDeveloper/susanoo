@@ -42,6 +42,8 @@ const ctlUsage = `使い方: susanoo ctl <操作> [オプション]
   isolate  端末か機器を隔離する（例: susanoo ctl isolate pc-001 -level full、susanoo ctl isolate 02:00:00:00:00:01）
   release  端末か機器の隔離を解除する（例: susanoo ctl release pc-001）
   revoke   端末の証明書を失効させ、端末を隔離する（例: susanoo ctl revoke pc-001）。入れ直すときは issue で発行し直す
+  admin    管理者の証明書を発行する・失効させる（susanoo ctl admin で説明を表示）
+  ca       認証局の証明書を同じ鍵のまま発行し直す（susanoo ctl ca renew -dir <ディレクトリ>）
   policy   ポリシーを署名して配布する、版を一覧する、先行適用を全体に広げる・取り消す、過去の版に戻す（susanoo ctl policy で説明を表示）
   rules    検知ルールを署名して配布する、版を一覧する、過去の版に戻す、当てはまった回数を表示する（susanoo ctl rules で説明を表示）
   intel    脅威情報の一覧のファイルを取り込んで署名して配布する、一覧を消す、照合する（susanoo ctl intel で説明を表示）
@@ -87,6 +89,10 @@ func runCtl(args []string, stdout, stderr io.Writer) int {
 		return ctlChange(args[1:], "release", stdout, stderr)
 	case "revoke":
 		return ctlChange(args[1:], "revoke", stdout, stderr)
+	case "admin":
+		return ctlAdmin(args[1:], stdout, stderr)
+	case "ca":
+		return ctlCA(args[1:], stdout, stderr)
 	case "audit":
 		return ctlAudit(args[1:], stdout, stderr)
 	case "group":

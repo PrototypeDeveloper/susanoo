@@ -16,6 +16,7 @@ import (
 
 	"susanoo/internal/api"
 	"susanoo/internal/event"
+	"susanoo/internal/pki"
 )
 
 // 全体の状態の表示とイベントの検索（M8）。
@@ -66,6 +67,13 @@ func ctlStatus(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 	fmt.Fprintf(stdout, "susanoo %s（CONTROLLER の起動 %s、証明書の期限 %s）\n", st.Version, st.StartedAt.Local().Format(timeFormat), st.CertExpiry.Local().Format("2006-01-02"))
+	if e := st.CAExpiry; e != nil {
+		fmt.Fprintf(stdout, "認証局の期限 %s", e.Local().Format("2006-01-02"))
+		if time.Until(*e) < pki.CAWarning {
+			fmt.Fprint(stdout, "（期限が近いので、ctl ca renew で同じ鍵のまま発行し直してください）")
+		}
+		fmt.Fprintln(stdout)
+	}
 	if e := st.IssuerExpiry; e != nil {
 		fmt.Fprintf(stdout, "発行用の認証局の期限 %s", e.Local().Format("2006-01-02"))
 		if time.Until(*e) < issuerWarnBefore {

@@ -13,6 +13,7 @@ import (
 	"susanoo/internal/api"
 	"susanoo/internal/event"
 	"susanoo/internal/pki"
+	"susanoo/internal/store"
 	"susanoo/internal/version"
 )
 
@@ -30,7 +31,7 @@ func (c *Controller) getStatus(w http.ResponseWriter, _ *http.Request, _ pki.Ide
 	now := c.now()
 	c.mu.Lock()
 	st := api.Status{Version: version.Version, StartedAt: c.started, Response: c.pol.Response, CertExpiry: c.certExpiry(), IssuerExpiry: c.issuerExpiry(),
-		EnrollCodes: c.activeEnrollCodes(now), ClockSynced: c.clockSynced(), MaxClockSkew: c.cfg.MaxClockSkew.String()}
+		EnrollCodes: c.activeEnrollCodes(now), ClockSynced: c.clockSynced(), MaxClockSkew: c.cfg.MaxClockSkew.String(), CAExpiry: c.caExpiry()}
 	info := c.policyInfoLocked()
 	st.Policy, st.Canary = info.Current, info.Canary
 	for _, d := range c.devices {
@@ -90,7 +91,8 @@ func (c *Controller) getStatus(w http.ResponseWriter, _ *http.Request, _ pki.Ide
 	}
 
 	classFilter := []byte(`"class_uid":` + strconv.Itoa(int(event.ClassDetectionFinding)) + `,`)
-	if lines, err := c.events.Query(time.Time{}, recentFindings, func(line []byte) bool { return bytes.Contains(line, classFilter) }); err == nil {
+	findings := store.Filter{Tags: [][]string{{classTag(event.ClassDetectionFinding)}}}
+	if lines, err := c.events.Query(findings, recentFindings, func(line []byte) bool { return bytes.Contains(line, classFilter) }); err == nil {
 		for _, l := range lines {
 			var e event.Event
 			if json.Unmarshal(l, &e) == nil {
@@ -163,7 +165,14 @@ func (c *Controller) searchEvents(w http.ResponseWriter, r *http.Request, _ pki.
 		}
 		return true
 	}
-	lines, err := c.events.Query(q.Since, q.Limit, match)
+	flt := store.Filter{Since: q.Since, Until: q.Until}
+	if class != 0 {
+		flt.Tags = append(flt.Tags, []string{classTag(class)})
+	}
+	if tag, ok := deviceTag(q.Device); ok {
+		flt.Tags = append(flt.Tags, []string{tag})
+	}
+	lines, err := c.events.Query(flt, q.Limit, match)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -173,6 +182,47 @@ func (c *Controller) searchEvents(w http.ResponseWriter, r *http.Request, _ pki.
 		out[i] = l
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// イベントの索引（2m-3）。種類と、端末か機器を表す値（eventOf で比べるもの）を印にする。
+
+func classTag(c event.ClassUID) string { return "c:" + strconv.Itoa(int(c)) }
+
+// deviceTag は、端末か機器 who の印を返す。eventOf は大文字と小文字を区別せずに比べるので、印は小文字にする。
+// ASCII でない値は小文字への変換と比べ方が一致しないことがあるので、索引で絞り込まない。
+func deviceTag(who string) (string, bool) {
+	if who == "" {
+		return "", false
+	}
+	for i := 0; i < len(who); i++ {
+		if who[i] >= 0x80 {
+			return "", false
+		}
+	}
+	return "d:" + strings.ToLower(who), true
+}
+
+// eventIndex は保存するイベントの時刻と印を返す（store.Indexer）。
+func eventIndex(v any) (int64, []string) {
+	e, ok := v.(*event.Event)
+	if !ok {
+		return 0, nil
+	}
+	tags := []string{classTag(e.ClassUID)}
+	add := func(ids ...string) {
+		for _, id := range ids {
+			if id != "" {
+				tags = append(tags, "d:"+strings.ToLower(id))
+			}
+		}
+	}
+	if d := e.Device; d != nil {
+		add(d.UID, d.IP, d.MAC, d.Hostname)
+	}
+	if s := e.SrcEndpoint; s != nil {
+		add(s.UID, s.IP, s.MAC)
+	}
+	return e.Time, tags
 }
 
 // eventOf は、イベントが端末か機器 who（端末 ID、アドレス、MAC アドレス、ホスト名）のものかを返す。

@@ -291,8 +291,10 @@ func TestClient(t *testing.T) {
 	}
 	// 名前を claude にした bash の配下で、sudo と永続化の場所への書き込みを行う。sudo は root なので認証なしに動き、すぐ終わる
 	// （失敗しても起動は記録される）。エージェント役の bash は、実際の AI エージェントと同じく長く動くプロセスとして 1 秒生かす。
-	inNS(pc.ns, "/bin/bash", "-c", `exec -a claude /bin/bash -c 'sudo -n true; sleep 1'`).Run()
-	if out, err := inNS(pc.ns, "/bin/bash", "-c", `exec -a claude /bin/bash -c 'echo "@reboot /usr/local/bin/sync-notes" > `+persist+`/agent-job; sleep 1'`).CombinedOutput(); err != nil {
+	// bash は -c の最後のコマンドを fork せずに exec するので、最後に「; :」を足す（足さないと、同じ PID がすぐに sleep に
+	// 置き換わり、CLIENT が調べるときには claude の名前が見えないことがある）。
+	inNS(pc.ns, "/bin/bash", "-c", `exec -a claude /bin/bash -c 'sudo -n true; sleep 1; :'`).Run()
+	if out, err := inNS(pc.ns, "/bin/bash", "-c", `exec -a claude /bin/bash -c 'echo "@reboot /usr/local/bin/sync-notes" > `+persist+`/agent-job; sleep 1; :'`).CombinedOutput(); err != nil {
 		t.Fatalf("エージェントの配下の書き込みを実行できません: %v %s", err, out)
 	}
 	for _, id := range []string{"enumeration", "agent-privilege"} {

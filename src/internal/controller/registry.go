@@ -40,6 +40,7 @@ type device struct {
 	// UpdatesHash は最後に指示に入れた更新サーバーのハッシュ（変わったら版数を上げる。2m-1）。
 	UpdatesHash string `json:"updates_hash,omitempty"`
 	Lagging     bool   `json:"lagging,omitempty"` // ハートビートは届くのに、指示を適用しないままになっている（2m-1）
+	CAHash      string `json:"ca_hash,omitempty"` // CLIENT が信頼している認証局の証明書の SHA-256（2m-3）
 	lagSince    time.Time
 	lagBeats    int
 

@@ -57,6 +57,8 @@ const (
 	// PathEnrollCodes は登録コードの管理（管理者）。POST で作り（EnrollCodeCreate。応答の EnrollCode にだけコードが入る）、
 	// GET で一覧（[]EnrollCode）、PathEnrollCodes+"/{端末ID}" の DELETE で取り消す。
 	PathEnrollCodes = "/v1/enroll/codes"
+	// PathAdmins は管理者の証明書の失効（2m-3）。GET で AdminList、PathAdmins+"/{ID}/revoke" への POST（AdminRevokeRequest）で失効させる。
+	PathAdmins = "/v1/admins"
 	// PathReleases はリリースの配布。管理者は GET で状態（ReleaseInfo。配布していなければ 404）、POST で目録を送る
 	// （ReleasePush）。PathReleases+"/files/{os}/{arch}" の PUT で実行ファイルを送り（本文はファイルそのもの）、
 	// 端末は GET で受け取る。"/promote" の POST で全体に広げ、"/abort" の POST で配布をやめる。
@@ -128,6 +130,7 @@ type Heartbeat struct {
 	Capabilities platform.Capabilities `json:"capabilities"`
 	Version      string                `json:"version,omitempty"`      // CLIENT の版数（リリースの配布に使う）
 	Resources    *ResourceUsage        `json:"resources,omitempty"`    // CLIENT の資源の使用量（測れない端末では nil）
+	CAHash       string                `json:"ca_hash,omitempty"`      // CLIENT が信頼している認証局の証明書の SHA-256（2m-3。違えば指示で新しい証明書を渡す）
 	ClockSynced  *bool                 `json:"clock_synced,omitempty"` // 端末の時刻が NTP などで同期しているか（分からなければ nil）
 }
 
@@ -162,6 +165,7 @@ type Command struct {
 	Apps      *policy.AppControl    `json:"apps,omitempty"`      // プロセス単位の通信の制御（C7。端末のグループの設定。なければ制御しない）
 	Release   *ReleaseOffer         `json:"release,omitempty"`   // 入れ替えを勧めるリリース（版数とは別に、受け取るたびに確かめる）
 	Gateway   *GatewayInfo          `json:"gateway,omitempty"`   // GW の LAN 側のアドレスと MAC アドレス（端末の ARP の表と比べる。版数が適用済み以上なら受け取る）
+	CA        []byte                `json:"ca,omitempty"`        // 発行し直した認証局の証明書（DER。端末の信頼しているものと違うときだけ。2m-3）
 	IssuedAt  time.Time             `json:"issued_at"`
 }
 
@@ -444,6 +448,24 @@ type Device struct {
 	Lagging     bool                  `json:"lagging,omitempty"`      // ハートビートは届くのに、指示を適用しないままになっている
 }
 
+// AdminRevokeRequest は管理者の証明書の失効（2m-3）。Before より前に発行した証明書を失効させる。
+// 省略すると、ほかの管理者なら今、自分と同じ ID なら今使っている証明書より前に発行したもの。
+type AdminRevokeRequest struct {
+	Before time.Time `json:"before,omitzero"`
+}
+
+// AdminRevocation は失効させた管理者の証明書（RevokedBefore 以前に発行したもの）。
+type AdminRevocation struct {
+	ID            string    `json:"id"`
+	RevokedBefore time.Time `json:"revoked_before"`
+}
+
+// AdminList は管理者の証明書の失効の一覧。
+type AdminList struct {
+	Self    string            `json:"self"` // 要求した管理者の ID
+	Revoked []AdminRevocation `json:"revoked"`
+}
+
 // CertificateResponse は更新した証明書。
 type CertificateResponse struct {
 	Certificate []byte   `json:"certificate"`     // DER
@@ -549,6 +571,7 @@ type Status struct {
 	EnrollCodes    int             `json:"enroll_codes,omitempty"`    // 有効な登録コードの数（M1。ある間は証明書なしの接続を登録の窓口だけ受け付ける）
 	ClockSynced    *bool           `json:"clock_synced,omitempty"`    // CONTROLLER の機器の時刻が同期しているか（分からなければ nil）
 	MaxClockSkew   string          `json:"max_clock_skew,omitempty"`  // 端末の時刻のずれの上限
+	CAExpiry       *time.Time      `json:"ca_expiry,omitempty"`       // 認証局（二段構えならルート）の証明書の期限（ctl ca renew で更新する）
 	ClockSkewed    []Device        `json:"clock_skewed,omitempty"`    // 時刻のずれが上限を超えている端末
 	Throttled      []Device        `json:"throttled,omitempty"`       // 資源の上限を超えて監視を間引いている端末
 	Lagging        []Device        `json:"lagging,omitempty"`         // 指示を適用しないままになっている端末

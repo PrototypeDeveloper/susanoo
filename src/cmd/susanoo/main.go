@@ -41,7 +41,8 @@ const (
 	exitOK    = 0
 	exitError = 1
 	exitUsage = 2
-	// exitUpdated は、CLIENT が新しい版に入れ替えて終わったことを表す。systemd などで起動し直す（Restart=always）。
+	// exitUpdated は、CLIENT が新しい版に入れ替えたか、認証局の証明書を置き換えて、起動し直すために終わったことを表す。
+	// systemd などで起動し直す（Restart=always）。
 	exitUpdated = 75
 )
 

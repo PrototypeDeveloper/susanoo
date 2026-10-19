@@ -165,7 +165,7 @@ func TestQuery(t *testing.T) {
 		}
 		return out
 	}
-	lines, err := s.Query(time.Time{}, 3, match("a"))
+	lines, err := s.Query(Filter{}, 3, match("a"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestQuery(t *testing.T) {
 	if g := got(lines); !slices.Equal(g, []string{"17/2", "18/0", "18/2"}) {
 		t.Errorf("新しいものから 3 件 = %v", g)
 	}
-	lines, _ = s.Query(time.Date(2026, 10, 17, 18, 0, 0, 0, time.Local), 100, match("b"))
+	lines, _ = s.Query(Filter{Since: time.Date(2026, 10, 17, 18, 0, 0, 0, time.Local)}, 100, match("b"))
 	if g := got(lines); !slices.Equal(g, []string{"17/1", "17/3", "18/1", "18/3"}) {
 		t.Errorf("17 日以降の b = %v（16 日のファイルは読まない）", g)
 	}
@@ -182,7 +182,7 @@ func TestQuery(t *testing.T) {
 	f, _ := os.OpenFile(files[len(files)-1], os.O_WRONLY|os.O_APPEND, 0o600)
 	f.WriteString(`{"day":18,"i":9,"kind":"a"`)
 	f.Close()
-	lines, _ = s.Query(time.Time{}, 1, match("a"))
+	lines, _ = s.Query(Filter{}, 1, match("a"))
 	if g := got(lines); !slices.Equal(g, []string{"18/2"}) {
 		t.Errorf("途中の行を読んだ: %v", g)
 	}

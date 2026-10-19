@@ -27,7 +27,7 @@ func init() {
 	extraHelpers["supervise"] = supervise
 }
 
-// supervise は「実行ファイル|設定ファイル」の CLIENT を動かし、新しい版に入れ替えて終わったら（終了コード 75）起動し直す
+// supervise は「実行ファイル|設定ファイル」の CLIENT を動かし、起動し直しを求めて終わったら（終了コード 75）起動し直す
 // （systemd の Restart の代わり）。SIGTERM を受けたら CLIENT に送って終わる。
 func supervise(arg string) int {
 	exe, cfg, _ := strings.Cut(arg, "|")
@@ -53,7 +53,7 @@ func supervise(arg string) int {
 				fmt.Println("CLIENT が終わりました:", err)
 				return 1
 			}
-			fmt.Println("CLIENT が新しい版に入れ替えて終わりました。起動し直します")
+			fmt.Println("CLIENT が起動し直しを求めて終わりました（新しい版への入れ替えか、認証局の証明書の更新）。起動し直します")
 		}
 	}
 }

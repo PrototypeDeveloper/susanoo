@@ -247,8 +247,12 @@ func ctlInitIssuer(dir, from string, stdout io.Writer) error {
 	if err := pki.CheckIssuer(root, issuer, priv.Public().(ed25519.PublicKey)); err != nil {
 		return err
 	}
+	// ルートの認証局は今のものか、同じ鍵と名前で発行し直したもの（ctl ca renew。2m-3）に限る。
 	if cur, err := pki.ReadCertFile(filepath.Join(dir, fileCACert)); err == nil && !cur.Equal(root) {
-		return fmt.Errorf("%s のルートの認証局が、今のもの（%s）と違います", from, filepath.Join(dir, fileCACert))
+		if err := pki.SameCA(cur, root); err != nil {
+			return fmt.Errorf("%s のルートの認証局が、今のもの（%s）と違います: %w", from, filepath.Join(dir, fileCACert), err)
+		}
+		fmt.Fprintf(stdout, "ルートの認証局の証明書を、発行し直したもの（期限 %s）に置き換えます。\n", root.NotAfter.Local().Format("2006-01-02"))
 	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}

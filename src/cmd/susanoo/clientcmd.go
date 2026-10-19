@@ -250,12 +250,16 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 	interval := cfg.HeartbeatInterval.Or(client.DefaultHeartbeatInterval)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	var updatedTo atomic.Value // 入れ替えたリリースの版数
+	var updatedTo atomic.Value  // 入れ替えたリリースの版数
+	var restartFor atomic.Value // 起動し直す理由（認証局の証明書の更新）
 	local, err := client.NewLocal(client.LocalConfig{
 		ReleaseKey:    releaseKey,
 		OnUpdate:      func(v string) { updatedTo.Store(v); cancel() },
+		OnRestart:     func(reason string) { restartFor.Store(reason); cancel() },
 		Cert:          cert,
 		CA:            pool,
+		CACert:        ca,
+		CAPath:        filepath.Join(pkiDir, fileCACert),
 		CertPath:      filepath.Join(pkiDir, fileClientCert), // 更新した証明書で置き換える（M1）
 		CommandKey:    commandKey,
 		StateDir:      stateDir,
@@ -287,6 +291,10 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 	}
 	if v, ok := updatedTo.Load().(string); ok {
 		log.Info("新しい版に入れ替えたので終わります。起動し直してください", "版数", v)
+		return exitUpdated
+	}
+	if reason, ok := restartFor.Load().(string); ok {
+		log.Info("起動し直すために終わります", "理由", reason)
 		return exitUpdated
 	}
 	if err != nil {

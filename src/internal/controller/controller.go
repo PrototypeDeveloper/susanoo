@@ -218,7 +218,7 @@ func New(cfg Config) (*Controller, error) {
 	if err != nil {
 		return nil, err
 	}
-	events, err := store.Open(filepath.Join(cfg.Dir, "events"), "events", cfg.MaxEventBytes)
+	events, err := store.OpenIndexed(filepath.Join(cfg.Dir, "events"), "events", cfg.MaxEventBytes, eventIndex)
 	if err != nil {
 		al.Close()
 		return nil, err
@@ -280,6 +280,7 @@ func New(cfg Config) (*Controller, error) {
 		return nil, err
 	}
 	c.warnClock()
+	c.warnCA()
 	return c, nil
 }
 
@@ -656,7 +657,7 @@ func (c *Controller) commandLocked(d *device) (sign.Envelope, error) {
 		c.saveLocked()
 	}
 	cmd := api.Command{DeviceID: d.ID, Version: d.Version, Isolation: d.Isolation, Updates: updates, Evidence: d.Evidence, Apps: g.Apps, IssuedAt: c.now().UTC(),
-		Release: c.releaseOfferLocked(d), Gateway: c.gatewayInfo()}
+		Release: c.releaseOfferLocked(d), Gateway: c.gatewayInfo(), CA: c.caForLocked(d)}
 	payload, err := json.Marshal(cmd)
 	if err != nil {
 		return sign.Envelope{}, err

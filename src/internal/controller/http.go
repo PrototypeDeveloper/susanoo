@@ -42,6 +42,8 @@ func (c *Controller) Handler() http.Handler {
 	mux.Handle("GET "+api.PathLearnedSuggest, c.require(pki.RoleAdmin, c.suggestAllow))
 	mux.Handle("POST "+api.PathCertificate, c.require(pki.RoleClient, c.renewCertificate))
 	mux.Handle("POST "+api.PathDevices+"/{id}/revoke", c.require(pki.RoleAdmin, c.revokeDevice))
+	mux.Handle("GET "+api.PathAdmins, c.require(pki.RoleAdmin, c.listAdmins))
+	mux.Handle("POST "+api.PathAdmins+"/{id}/revoke", c.require(pki.RoleAdmin, c.revokeAdmin))
 	mux.Handle("GET "+api.PathStatus, c.require(pki.RoleAdmin, c.getStatus))
 	mux.Handle("GET "+api.PathEvents, c.require(pki.RoleAdmin, c.searchEvents))
 	mux.Handle("GET "+api.PathPolicy, c.require(pki.RoleAdmin, c.getPolicy))
@@ -148,6 +150,7 @@ func (c *Controller) heartbeat(w http.ResponseWriter, r *http.Request, id pki.Id
 	d.AppControl = hb.AppControl
 	c.recordSoftwareLocked(d, hb)
 	c.recordResourcesLocked(d, hb)
+	d.CAHash = hb.CAHash
 	skew := c.recordClockLocked(d, hb, now)
 	cert := r.TLS.PeerCertificates[0]
 	d.CertExpiry = cert.NotAfter

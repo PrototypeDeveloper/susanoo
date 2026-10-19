@@ -123,7 +123,7 @@ func backupEntries(p gwPaths, events, evidence bool) ([]backup.Entry, []string, 
 			if !d.Type().IsRegular() || tempFile(d.Name()) || skip(rel) {
 				return nil
 			}
-			entries = append(entries, backup.Entry{Name: prefix + rel, Path: path, Log: strings.HasSuffix(rel, ".log") || strings.HasSuffix(rel, ".jsonl")})
+			entries = append(entries, backup.Entry{Name: prefix + rel, Path: path, Log: strings.HasSuffix(rel, ".log") || strings.HasSuffix(rel, ".jsonl") || strings.HasSuffix(rel, ".idx")})
 			return nil
 		})
 	}

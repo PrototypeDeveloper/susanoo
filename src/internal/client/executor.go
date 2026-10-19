@@ -59,6 +59,8 @@ var ErrExecutorStopped = errors.New("client: 執行部とのつながりが切�
 type LocalConfig struct {
 	Cert          tls.Certificate   // 端末の証明書と秘密鍵（ed25519）
 	CA            *x509.CertPool    // 内部の認証局。更新した証明書を確かめる。nil なら更新を受け付けない
+	CACert        *x509.Certificate // 内部の認証局（二段構えならルート）の証明書。発行し直されたものを受け入れるときに比べる（2m-3）
+	CAPath        string            // 発行し直された認証局の証明書を保存するファイル。空なら保存しない
 	CertPath      string            // 更新した証明書を保存するファイル。空なら保存しない
 	CommandKey    ed25519.PublicKey // CONTROLLER の指示を検証する公開鍵
 	StateDir      string            // 適用した指示を記録するディレクトリ
@@ -72,6 +74,7 @@ type LocalConfig struct {
 	Executable string               // 入れ替える実行ファイル。空なら今の実行ファイル
 	Version    string               // 今の版数。空ならビルドの版数
 	OnUpdate   func(version string) // 実行ファイルを入れ替えたら呼ぶ（CLIENT を起動し直す）
+	OnRestart  func(reason string)  // 認証局の証明書を置き換えたら呼ぶ（CLIENT を起動し直す。2m-3）
 	// 資源の上限（2l）。超えたら監視を間引く。0 ならその資源では判断しない（測って報告だけする）。
 	CPULimit         float64       // CPU の使用率の上限（1 つの CPU を使い切ると 100）
 	MemoryLimit      int64         // 実メモリの上限（バイト。執行部、解析部、その子の合計）
@@ -91,16 +94,18 @@ type state struct {
 
 // Local は同じプロセスで動く執行部。
 type Local struct {
-	cfg      LocalConfig
-	log      *slog.Logger
-	id       pki.Identity
-	leaf     *x509.Certificate // 今の証明書（mu で守る）
-	chain    [][]byte          // 今の証明書の連なり（mu で守る。リリースの受け取りに使う）
-	key      ed25519.PrivateKey
-	signer   *sign.Signer
-	verifier *sign.Verifier
-	bootID   string
-	hostname string
+	cfg       LocalConfig
+	log       *slog.Logger
+	id        pki.Identity
+	leaf      *x509.Certificate // 今の証明書（mu で守る）
+	caCert    *x509.Certificate // 信頼している認証局の証明書（mu で守る）
+	caRefused string            // 受け入れなかった認証局の証明書の SHA-256（同じものを何度もログに残さない。mu で守る）
+	chain     [][]byte          // 今の証明書の連なり（mu で守る。リリースの受け取りに使う）
+	key       ed25519.PrivateKey
+	signer    *sign.Signer
+	verifier  *sign.Verifier
+	bootID    string
+	hostname  string
 
 	mu      sync.Mutex // 状態と自己隔離の操作を守る
 	state   state
@@ -170,7 +175,7 @@ func NewLocal(cfg LocalConfig) (*Local, error) {
 	return &Local{
 		cfg: cfg, log: cfg.Logger.With("端末", id.ID), id: id, leaf: leaf, key: key, signer: signer, verifier: verifier,
 		bootID: rand.Text(), hostname: hostname, state: st, chain: slices.Clone(cfg.Cert.Certificate), updFailed: map[string]time.Time{},
-		res: resourceMonitor{cpuLimit: cfg.CPULimit, memLimit: cfg.MemoryLimit},
+		res: resourceMonitor{cpuLimit: cfg.CPULimit, memLimit: cfg.MemoryLimit}, caCert: cfg.CACert,
 	}, nil
 }
 
@@ -247,6 +252,7 @@ func (l *Local) Heartbeat(context.Context) (sign.Envelope, error) {
 		Capabilities: l.cfg.Platform.Capabilities(),
 		Version:      l.currentVersion(),
 		Resources:    l.resourceUsage(),
+		CAHash:       l.caHash(),
 		ClockSynced:  l.clockSynced(),
 	})
 	if err != nil {
@@ -273,10 +279,20 @@ func (l *Local) Apply(ctx context.Context, env sign.Envelope) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	// GW の情報は、版数が適用済み以上の指示から受け取る（版数を上げずに知らせ始めた端末にも届くように）。
+	// GW の情報と認証局の証明書は、版数が適用済み以上の指示から受け取る（版数を上げずに知らせ始めた端末にも届くように）。
 	if cmd.Version >= l.state.Version && !sameGateway(cmd.Gateway, l.state.Gateway) {
 		l.state.Gateway = cmd.Gateway
 		l.save()
+	}
+	if cmd.Version >= l.state.Version && cmd.CA != nil {
+		if ok, err := l.acceptCA(cmd.CA); err != nil {
+			if h := sha256Hex(cmd.CA); h != l.caRefused {
+				l.caRefused = h
+				l.log.Error("指示で届いた認証局の証明書を受け入れません", "エラー", err)
+			}
+		} else if ok && l.cfg.OnRestart != nil {
+			go l.cfg.OnRestart("認証局の証明書の更新")
+		}
 	}
 	if cmd.Version <= l.state.Version {
 		return nil
