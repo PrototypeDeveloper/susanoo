@@ -26,18 +26,22 @@ import (
 
 // LAN 側の処理から CONTROLLER への知らせと、CONTROLLER から LAN 側の処理への要求。
 const (
-	noticeNeighbor = "neighbor" // ARP で見えた機器
-	noticeARPReq   = "arp_req"  // ARP で LAN のアドレスを探した（LAN 内のスキャンの検知に使う）
-	noticeLease    = "lease"    // DHCP の貸し出しと返却
-	noticeDNS      = "dns"      // DNS の問い合わせの記録
-	noticeFlow     = "flow"     // 通信の記録
-	noticeLearned  = "learned"  // 学習モードで通した名前と、遮断した名前
-	reqProbe       = "probe"    // 機器が LAN にいるかの確認
+	noticeNeighbor = "neighbor"    // ARP で見えた機器
+	noticeARPReq   = "arp_req"     // ARP で LAN のアドレスを探した（LAN 内のスキャンの検知に使う）
+	noticeLease    = "lease"       // DHCP の貸し出しと返却
+	noticeDNS      = "dns"         // DNS の問い合わせの記録
+	noticeFlow     = "flow"        // 通信の記録
+	noticeLearned  = "learned"     // 学習モードで通した名前と、遮断した名前
+	noticeND       = "nd"          // IPv6 の近隣探索
+	noticeDHCPv6   = "dhcp6"       // GW の問い合わせに答えた DHCPv6 のサーバー
+	reqProbe       = "probe"       // 機器が LAN にいるかの確認
+	reqWithdrawRA  = "withdraw_ra" // 不正なルーターの広告を取り消す RA を送る
 	// 端末のグループと隔離の状態は reqMembership（gw.go）で頼む。
 )
 
 const (
 	maxHostname   = 255  // DHCP のホスト名の上限（オプション 12 の長さ）
+	maxNDItems    = 16   // 近隣探索と DHCPv6 の知らせの、ネットワークとアドレスの数の上限
 	maxLANQueue   = 4096 // CONTROLLER がまだ処理していない知らせの上限
 	dropReportGap = time.Minute
 )
@@ -53,12 +57,65 @@ type LANObserver interface {
 	RecordDNS(r controller.DNSRecord)
 	RecordFlow(r controller.FlowRecord)
 	RecordLearned(group, domain string, blocked bool)
+	ObserveND(o controller.NDObservation)
+	ObserveDHCPv6(o controller.DHCPv6Observation)
 }
 
 // LANServices は、LAN 側の処理が CONTROLLER の要求に応える働き。
 type LANServices interface {
 	Probe(ctx context.Context, ip netip.Addr) (net.HardwareAddr, bool)
 	SetMembership(ctx context.Context, m egress.Membership) error
+	WithdrawRA(ctx context.Context, src netip.Addr, mac net.HardwareAddr, prefixes []netip.Prefix, rdnss []netip.Addr) error
+}
+
+type ndBody struct {
+	MAC            string         `json:"mac"`
+	Type           int            `json:"type"`
+	Src            netip.Addr     `json:"src"`
+	Target         netip.Addr     `json:"target,omitzero"`
+	Override       bool           `json:"override,omitempty"`
+	RouterLifetime int            `json:"router_lifetime,omitempty"`
+	Prefixes       []netip.Prefix `json:"prefixes,omitempty"`
+	RDNSS          []netip.Addr   `json:"rdnss,omitempty"`
+}
+
+type dhcp6Body struct {
+	MAC     string       `json:"mac"`
+	Src     netip.Addr   `json:"src"`
+	DNS     []netip.Addr `json:"dns,omitempty"`
+	Address []netip.Addr `json:"address,omitempty"`
+}
+
+type withdrawBody struct {
+	Src      netip.Addr     `json:"src"`
+	MAC      string         `json:"mac"`
+	Prefixes []netip.Prefix `json:"prefixes,omitempty"`
+	RDNSS    []netip.Addr   `json:"rdnss,omitempty"`
+}
+
+// ipv6Only は、アドレスがすべて IPv6（IPv4 を埋め込んだものを除く）で、数が上限の内かを確かめる。
+func ipv6Only(addrs ...netip.Addr) bool {
+	if len(addrs) > maxNDItems {
+		return false
+	}
+	for _, a := range addrs {
+		if !a.Is6() || a.Is4In6() || a.Zone() != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func prefixesOK(ps []netip.Prefix) bool {
+	if len(ps) > maxNDItems {
+		return false
+	}
+	for _, p := range ps {
+		if !p.IsValid() || !ipv6Only(p.Addr()) {
+			return false
+		}
+	}
+	return true
 }
 
 type neighborBody struct {
@@ -232,6 +289,40 @@ func (l *LANLink) notice(typ string, body json.RawMessage) error {
 			return err
 		}
 		l.enqueue(func(o LANObserver) { o.RecordLearned(b.Group, b.Domain, b.Blocked) })
+	case noticeND:
+		var b ndBody
+		if err := decodeBody(body, &b); err != nil {
+			return err
+		}
+		hw, err := parseMAC(b.MAC)
+		if err != nil {
+			return err
+		}
+		targets := []netip.Addr{b.Src}
+		if b.Target.IsValid() {
+			targets = append(targets, b.Target)
+		}
+		if b.Type < 133 || b.Type > 136 || !ipv6Only(targets...) || !ipv6Only(b.RDNSS...) || !prefixesOK(b.Prefixes) ||
+			b.RouterLifetime < 0 || b.RouterLifetime > 65535 {
+			return fmt.Errorf("privsep: 近隣探索の知らせが不正です")
+		}
+		obs := controller.NDObservation{Frame: hw, Type: b.Type, Src: b.Src, Target: b.Target, Override: b.Override,
+			RouterLifetime: b.RouterLifetime, Prefixes: b.Prefixes, RDNSS: b.RDNSS}
+		l.enqueue(func(o LANObserver) { o.ObserveND(obs) })
+	case noticeDHCPv6:
+		var b dhcp6Body
+		if err := decodeBody(body, &b); err != nil {
+			return err
+		}
+		hw, err := parseMAC(b.MAC)
+		if err != nil {
+			return err
+		}
+		if !ipv6Only(b.Src) || !ipv6Only(b.DNS...) || !ipv6Only(b.Address...) {
+			return fmt.Errorf("privsep: DHCPv6 の知らせが不正です")
+		}
+		obs := controller.DHCPv6Observation{Frame: hw, Src: b.Src, DNS: b.DNS, Address: b.Address}
+		l.enqueue(func(o LANObserver) { o.ObserveDHCPv6(obs) })
 	default:
 		return fmt.Errorf("privsep: 知らない知らせ %q です", typ)
 	}
@@ -249,6 +340,11 @@ func (l *LANLink) Probe(ctx context.Context, ip netip.Addr) (net.HardwareAddr, b
 		return nil, false
 	}
 	return hw, true
+}
+
+// WithdrawRA は、不正なルーターの広告を取り消す RA を送るよう、LAN 側の処理に頼む。
+func (l *LANLink) WithdrawRA(ctx context.Context, src netip.Addr, mac net.HardwareAddr, prefixes []netip.Prefix, rdnss []netip.Addr) error {
+	return l.p.call(ctx, reqWithdrawRA, withdrawBody{Src: src, MAC: mac.String(), Prefixes: prefixes, RDNSS: rdnss}, nil)
 }
 
 // SetMembership は端末のグループと隔離の状態を LAN 側の処理に渡す。
@@ -320,6 +416,19 @@ func (l *ControllerLink) request(ctx context.Context, typ string, body json.RawM
 			return nil, err
 		}
 		return nil, svc.SetMembership(ctx, m)
+	case reqWithdrawRA:
+		var b withdrawBody
+		if err := decodeBody(body, &b); err != nil {
+			return nil, err
+		}
+		hw, err := parseMAC(b.MAC)
+		if err != nil {
+			return nil, err
+		}
+		if !b.Src.IsLinkLocalUnicast() || !ipv6Only(b.Src) || !ipv6Only(b.RDNSS...) || !prefixesOK(b.Prefixes) {
+			return nil, errors.New("privsep: 取り消す広告の内容が不正です")
+		}
+		return nil, svc.WithdrawRA(ctx, b.Src, hw, b.Prefixes, b.RDNSS)
 	}
 	return nil, fmt.Errorf("知らない要求 %q です", typ)
 }
@@ -351,4 +460,13 @@ func (l *ControllerLink) RecordFlow(r controller.FlowRecord) { l.send(noticeFlow
 
 func (l *ControllerLink) RecordLearned(group, domain string, blocked bool) {
 	l.send(noticeLearned, learnedBody{Group: group, Domain: domain, Blocked: blocked})
+}
+
+func (l *ControllerLink) ObserveND(o controller.NDObservation) {
+	l.send(noticeND, ndBody{MAC: o.Frame.String(), Type: o.Type, Src: o.Src, Target: o.Target, Override: o.Override,
+		RouterLifetime: o.RouterLifetime, Prefixes: o.Prefixes, RDNSS: o.RDNSS})
+}
+
+func (l *ControllerLink) ObserveDHCPv6(o controller.DHCPv6Observation) {
+	l.send(noticeDHCPv6, dhcp6Body{MAC: o.Frame.String(), Src: o.Src, DNS: o.DNS, Address: o.Address})
 }

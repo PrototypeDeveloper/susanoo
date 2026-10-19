@@ -76,6 +76,25 @@ type routerConfig struct {
 	WAN        string    `json:"wan"`         // WAN 側のインターフェース
 	WANDHCP    bool      `json:"wan_dhcp"`    // WAN 側のアドレスを DHCP で得る
 	AdminPorts *[]uint16 `json:"admin_ports"` // LAN から受け付ける管理用のポート。既定 [22]
+	// TrustedRouters は、LAN のルーター（や DHCPv6 のサーバー）として認める機器の MAC アドレス。その RA と DHCPv6 を不正としない。
+	TrustedRouters []string        `json:"trusted_routers"`
+	NDProbe        config.Duration `json:"nd_probe_interval"` // ルーター要請と DHCPv6 の問い合わせで、不正なルーターとサーバーを探す間隔。既定 5m
+}
+
+// defaultNDProbe は、不正なルーターと DHCPv6 のサーバーを探す既定の間隔。
+const defaultNDProbe = 5 * time.Minute
+
+// trustedRouters は、認めるルーターの MAC アドレスを確かめて、決まった書き方にする。
+func (r *routerConfig) trustedRouters() ([]string, error) {
+	var out []string
+	for _, s := range r.TrustedRouters {
+		hw, err := net.ParseMAC(s)
+		if err != nil || len(hw) != 6 {
+			return nil, fmt.Errorf("router.trusted_routers の %q は MAC アドレスで書いてください", s)
+		}
+		out = append(out, hw.String())
+	}
+	return out, nil
 }
 
 type dhcpConfig struct {
@@ -114,6 +133,11 @@ func runGW(ctx context.Context, args []string, stderr io.Writer) int {
 	listen, err := netip.ParseAddrPort(cfg.Listen)
 	if err != nil {
 		return fail(stderr, fmt.Errorf("listen %q はアドレスとポート（例: 192.168.10.1:8443）で書いてください", cfg.Listen))
+	}
+	if cfg.Router != nil {
+		if _, err := cfg.Router.trustedRouters(); err != nil {
+			return fail(stderr, err)
+		}
 	}
 	if (cfg.DHCP != nil || cfg.DNS != nil) && cfg.Router == nil {
 		return fail(stderr, errors.New("dhcp と dns を使うには router の設定が必要です"))
@@ -389,6 +413,10 @@ func prepareGW(ctx context.Context, cfg gwConfig, pol *policy.Policy, listen net
 	if g.files.arp, err = gw.OpenARPSocket(r.LAN); err != nil {
 		return nil, err
 	}
+	if g.files.nd, err = gw.OpenNDSocket(r.LAN); err != nil {
+		log.Warn("IPv6 の近隣探索を監視できません", "エラー", err)
+		g.files.nd = nil
+	}
 	adminPorts := []uint16{22}
 	if r.AdminPorts != nil {
 		adminPorts = *r.AdminPorts
@@ -458,6 +486,7 @@ func prepareGW(ctx context.Context, cfg gwConfig, pol *policy.Policy, listen net
 type gwFiles struct {
 	listener *os.File // 管理通信（TCP）
 	arp      *os.File // ARP の監視（AF_PACKET）
+	nd       *os.File // IPv6 の近隣探索の監視（AF_PACKET。使えなければ nil）
 	dhcp     *os.File // DHCP（UDP 67）
 	dnsUDP   *os.File // DNS（UDP 53）
 	dnsTCP   *os.File // DNS（TCP 53）
@@ -478,7 +507,7 @@ func (f *gwFiles) controllerEntries() []fileEntry {
 // lanEntries は LAN 側の処理に渡すソケットを返す。
 func (f *gwFiles) lanEntries() []fileEntry {
 	return []fileEntry{
-		{"arp", &f.arp}, {"dhcp", &f.dhcp}, {"dns_udp", &f.dnsUDP}, {"dns_tcp", &f.dnsTCP},
+		{"arp", &f.arp}, {"nd", &f.nd}, {"dhcp", &f.dhcp}, {"dns_udp", &f.dnsUDP}, {"dns_tcp", &f.dnsTCP},
 		{"flow_conntrack", &f.flowCT}, {"flow_nflog", &f.flowLog},
 	}
 }
@@ -745,6 +774,7 @@ func runGWInProcess(ctx context.Context, g *gwPrepared, pols *gwPolicies, intels
 			return err
 		}
 		c.egress, c.lan = lanPart, lanPart
+		c.trusted, _ = cfg.Router.trustedRouters() // 起動のときに確かめてある
 		pols.notifyLAN = func(st controller.PolicyState) { lanPart.setPolicyState(st) }
 		lanPart.setIntel(intelSet.Blocklist())
 		intels.notifyLAN = lanPart.setIntel
@@ -896,7 +926,10 @@ func serveGWController(conn *os.File, log *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		c.lan = &remoteLAN{addr: addr, prefix: prefix, mac: mac, link: link}
+		c.lan = &remoteLAN{addr: addr, prefix: prefix, mac: mac, link: link, addrs6: &gw.Addrs6Cache{Name: cfg.Router.LAN}}
+		if c.trusted, err = cfg.Router.trustedRouters(); err != nil {
+			return err
+		}
 		c.egress = membershipFanout{remote, link}
 	}
 	return c.run(ctx, func(ctrl *controller.Controller) {
@@ -912,6 +945,12 @@ type remoteLAN struct {
 	prefix netip.Prefix
 	mac    net.HardwareAddr
 	link   *privsep.LANLink
+	addrs6 *gw.Addrs6Cache
+}
+
+func (r *remoteLAN) Addrs6() []netip.Addr { return r.addrs6.Get() }
+func (r *remoteLAN) WithdrawRA(ctx context.Context, src netip.Addr, mac net.HardwareAddr, prefixes []netip.Prefix, rdnss []netip.Addr) error {
+	return r.link.WithdrawRA(ctx, src, mac, prefixes, rdnss)
 }
 
 func (r *remoteLAN) Addr() netip.Addr      { return r.addr }
@@ -1007,6 +1046,7 @@ type gwController struct {
 	canary     *policy.Policy // 先行適用の版（なければ nil）
 	pool       *x509.CertPool
 	root       *x509.Certificate // 内部の認証局（ルート）の証明書。登録した端末に渡す
+	trusted    []string          // LAN のルーターとして認める機器の MAC アドレス
 	cert       tls.Certificate
 	signer     *sign.Signer
 	rulesKey   ed25519.PublicKey       // 検知ルールの署名を確かめる公開鍵
@@ -1042,6 +1082,7 @@ func (c *gwController) run(ctx context.Context, started func(*controller.Control
 		Enforcer:         c.quarantine,
 		Issuer:           c.issuer,
 		Root:             c.root,
+		TrustedRouters:   c.trusted,
 		RulesKey:         c.rulesKey,
 		Intel:            c.intel,
 		IntelSet:         c.intelSet,
@@ -1089,6 +1130,7 @@ type gwLAN struct {
 	stateDir string
 	files    gwFiles
 	lan      *gw.LAN
+	addrs6   *gw.Addrs6Cache
 	ecfg     egress.Config                 // DNS の判断の設定（ポリシーを切り替えるときに作り直す）
 	engine   atomic.Pointer[egress.Engine] // DNS の判断（nftables への反映は learner に任せる）
 	intel    atomic.Pointer[intel.Matcher] // DNS で引かせない脅威情報のドメイン
@@ -1106,7 +1148,12 @@ func newGWLAN(cfg gwConfig, pol, canary *policy.Policy, stateDir string, files g
 	if err != nil {
 		return nil, err
 	}
-	l := &gwLAN{cfg: cfg, stateDir: stateDir, files: files, lan: lan, forward: forward, log: log}
+	if files.nd != nil {
+		if err := lan.AttachND(files.nd); err != nil {
+			return nil, err
+		}
+	}
+	l := &gwLAN{cfg: cfg, stateDir: stateDir, files: files, lan: lan, addrs6: &gw.Addrs6Cache{Name: cfg.Router.LAN}, forward: forward, log: log}
 	l.isolated.Store(&map[netip.Addr]bool{})
 	l.members.Store(&egress.Membership{})
 	l.ecfg = egress.Config{
@@ -1189,6 +1236,10 @@ func (l *gwLAN) MAC() net.HardwareAddr { return l.lan.MAC() }
 func (l *gwLAN) Probe(ctx context.Context, ip netip.Addr) (net.HardwareAddr, bool) {
 	return l.lan.Probe(ctx, ip)
 }
+func (l *gwLAN) Addrs6() []netip.Addr { return l.addrs6.Get() }
+func (l *gwLAN) WithdrawRA(_ context.Context, src netip.Addr, mac net.HardwareAddr, prefixes []netip.Prefix, rdnss []netip.Addr) error {
+	return l.lan.WithdrawRA(src, mac, prefixes, rdnss)
+}
 
 // SetMembership は、CONTROLLER から受け取った端末のグループと隔離の状態を、DNS の判断と DHCP に使う。
 func (l *gwLAN) SetMembership(ctx context.Context, m egress.Membership) error {
@@ -1205,6 +1256,32 @@ func (l *gwLAN) SetMembership(ctx context.Context, m egress.Membership) error {
 		return l.forward.SetMembership(ctx, m)
 	}
 	return nil
+}
+
+// probeIPv6 は、間をおいてルーター要請と DHCPv6 の問い合わせを送り、答える不正なルーターとサーバーを探す。
+// リンクローカルのアドレスがない（LAN で IPv6 を止めている）ときは、最初の 1 回だけログに残す。
+func (l *gwLAN) probeIPv6(ctx context.Context, interval time.Duration) {
+	first := time.NewTimer(5 * time.Second)
+	defer first.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-first.C:
+	}
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	warned := false
+	for {
+		if err := l.lan.ProbeIPv6(); err != nil && !warned {
+			l.log.Warn("不正なルーターと DHCPv6 のサーバーを探す問い合わせを送れません", "エラー", err)
+			warned = true
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
 }
 
 // quarantined は、隔離中の機器が使っていたアドレスかを返す（DHCP で割り当てない）。
@@ -1238,6 +1315,21 @@ func (l *gwLAN) run(ctx context.Context, sink privsep.LANObserver) error {
 		}
 	})
 	background("ARP の監視", l.lan.Run)
+	if l.lan.HasND() {
+		l.lan.SetNDHandler(func(ev gw.NDEvent) {
+			switch {
+			case ev.ND != nil:
+				n := ev.ND
+				sink.ObserveND(controller.NDObservation{Frame: ev.FrameMAC, Type: int(n.Type), Src: n.Src, Target: n.Target,
+					Override: n.Override, RouterLifetime: int(n.RouterLifetime), Prefixes: n.Prefixes, RDNSS: n.RDNSS})
+			case ev.DHCPv6 != nil:
+				d := ev.DHCPv6
+				sink.ObserveDHCPv6(controller.DHCPv6Observation{Frame: ev.FrameMAC, Src: d.Src, DNS: d.DNS, Address: d.Address})
+			}
+		})
+		background("近隣探索の監視", l.lan.RunND)
+		go l.probeIPv6(ctx, cfg.Router.NDProbe.Or(defaultNDProbe))
+	}
 	if d := cfg.DHCP; d != nil {
 		if len(d.DNS) == 0 && cfg.DNS != nil {
 			d.DNS = []string{l.lan.Addr().String()} // 端末には GW のリゾルバを知らせる

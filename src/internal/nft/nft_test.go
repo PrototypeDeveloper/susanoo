@@ -171,6 +171,7 @@ table inet susanoo_router {
 		ct state invalid drop
 		icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept
 		iifname "lan0" icmp type echo-request accept
+		iifname "lan0" icmpv6 type echo-request accept
 		iifname "lan0" tcp dport 8443 accept
 		iifname "lan0" udp sport 68 udp dport 67 accept
 		iifname "lan0" tcp dport { 22, 2222 } accept

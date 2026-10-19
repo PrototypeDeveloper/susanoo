@@ -357,7 +357,7 @@ func ctlHosts(args []string, stdout, stderr io.Writer) int {
 
 func printHosts(w io.Writer, list ...api.Host) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "MAC\tアドレス\tホスト名\t端末\t最終確認\t割り当て期限\t危険度\t隔離\t理由\t承認待ち")
+	fmt.Fprintln(tw, "MAC\tアドレス\tIPv6\tホスト名\t端末\t最終確認\t割り当て期限\t危険度\t隔離\t理由\t承認待ち")
 	for _, h := range list {
 		device := h.DeviceID
 		if device == "" {
@@ -367,8 +367,12 @@ func printHosts(w io.Writer, list ...api.Host) {
 		if !h.Lease.IsZero() {
 			lease = h.Lease.Local().Format("01-02 15:04:05")
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
-			h.MAC, dash(h.IP), dash(h.Hostname), device, h.LastSeen.Local().Format("01-02 15:04:05"), lease, h.Risk,
+		v6 := strings.Join(h.IPv6, ",")
+		if len(h.IPv6) > 2 {
+			v6 = strings.Join(h.IPv6[len(h.IPv6)-2:], ",") + fmt.Sprintf("（ほか %d）", len(h.IPv6)-2)
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			h.MAC, dash(h.IP), dash(v6), dash(h.Hostname), device, h.LastSeen.Local().Format("01-02 15:04:05"), lease, h.Risk,
 			dash(string(h.Isolation)), dash(h.Reason), dash(h.Pending))
 	}
 	tw.Flush()

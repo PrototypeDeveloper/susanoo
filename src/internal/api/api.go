@@ -384,6 +384,7 @@ type Host struct {
 	Since     time.Time             `json:"since,omitzero"`
 	Pending   string                `json:"pending,omitempty"`
 	Risk      int                   `json:"risk,omitempty"` // 危険度（M5。端末に結び付いた機器は端末の危険度）
+	IPv6      []string              `json:"ipv6,omitempty"` // 近隣探索で見えた IPv6 アドレス（G8）
 }
 
 // Learned は、学習モードで通した名前と、遮断した名前の記録（G2）。許可リストを作るときに使う。

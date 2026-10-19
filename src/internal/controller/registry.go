@@ -90,8 +90,13 @@ type host struct {
 	Reason    string                `json:"reason,omitempty"`
 	Since     time.Time             `json:"since,omitzero"`
 	Pending   string                `json:"pending,omitempty"`
+	IPv6      []ip6Entry            `json:"ipv6,omitempty"` // 近隣探索で見えた IPv6 アドレス
 
-	spoofAt time.Time // 最後になりすましを検知した時刻（保存しない）
+	spoofAt    time.Time // 最後になりすましを検知した時刻（保存しない）
+	raAt       time.Time // 最後に不正なルーター広告を検知した時刻
+	dhcp6At    time.Time // 最後に不正な DHCPv6 サーバーを検知した時刻
+	withdrawAt time.Time // 最後に不正なルーターの広告を取り消した時刻
+	ra         *raInfo   // 不正なルーターが最後に送った広告
 }
 
 func (h *host) view(group string) api.Host {
@@ -110,6 +115,9 @@ func (h *host) view(group string) api.Host {
 	}
 	if h.IP.IsValid() {
 		v.IP = h.IP.String()
+	}
+	for _, e := range h.IPv6 {
+		v.IPv6 = append(v.IPv6, e.Addr.String())
 	}
 	return v
 }

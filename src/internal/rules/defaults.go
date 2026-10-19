@@ -25,6 +25,8 @@ var Defaults = []Rule{
 	{ID: "mass-change", Name: "短時間の大量変更", Finding: event.FindingTypeMassChange, Mode: ModeEnforce, Score: 100},
 	{ID: "gateway-spoofing", Name: "ゲートウェイのなりすまし", Finding: event.FindingTypeGatewaySpoofing, Mode: ModeEnforce, Score: 100},
 	{ID: "ip-spoofing", Name: "アドレスのなりすまし", Finding: event.FindingTypeIPSpoofing, Mode: ModeEnforce, Score: 100},
+	{ID: "rogue-router", Name: "不正なルーター広告", Finding: event.FindingTypeRogueRouter, Mode: ModeEnforce, Score: 100},
+	{ID: "rogue-dhcpv6", Name: "不正な DHCPv6 サーバー", Finding: event.FindingTypeRogueDHCPv6, Mode: ModeEnforce, Score: 100},
 	{ID: "heartbeat-lost", Name: "ハートビートの途絶", Finding: event.FindingTypeHeartbeatLost, Mode: ModeEnforce, Score: 100},
 	{ID: "tamper", Name: "防御の仕組みの改ざん", Finding: event.FindingTypeTamper, Mode: ModeEnforce, Score: 0}, // 記録して警告する
 	// 振る舞いの検知（G6）は誤検知が出やすいため、試験運用から始める。

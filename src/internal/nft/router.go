@@ -16,7 +16,7 @@ var ifacePattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]{1,15}$`)
 //
 //   - LAN から WAN への通信を NAT で送り出し、その戻りの通信だけを通す
 //   - LAN の IPv6 の転送は遮断する（IPv6 の抜け道を防ぐ。MVP では LAN で IPv6 を使わない）
-//   - GW 自身には、LAN から DHCP、DNS、管理通信、管理用のポート（SSH など）、ping だけを受け付ける
+//   - GW 自身には、LAN から DHCP、DNS、管理通信、管理用のポート（SSH など）、ping（IPv4 と IPv6）だけを受け付ける
 //
 // 端末単位の遮断（GWTable）はこれより先に評価する。
 type Router struct {
@@ -49,6 +49,7 @@ func (r Router) Script() (string, error) {
 		"ct state invalid drop",
 		"icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-solicit, nd-router-advert } accept",
 		fmt.Sprintf("iifname %s icmp type echo-request accept", lan),
+		fmt.Sprintf("iifname %s icmpv6 type echo-request accept", lan),
 		fmt.Sprintf("iifname %s tcp dport %d accept", lan, r.ManagementPort),
 	}
 	if r.DHCP {

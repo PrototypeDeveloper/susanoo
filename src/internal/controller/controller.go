@@ -73,6 +73,7 @@ type Config struct {
 	LAN              LAN               // GW の LAN。nil なら在席の確認となりすましの検知をしない
 	Issuer           Issuer            // 端末の証明書の更新と登録に使う。nil なら更新も登録もしない
 	Root             *x509.Certificate // 内部の認証局（ルート）の証明書。登録した端末に渡す。nil なら登録しない
+	TrustedRouters   []string          // LAN のルーターとして認める機器の MAC アドレス（その RA と DHCPv6 を不正としない）
 	Canary           *policy.Policy    // 先行適用の版（なければ nil）。Policy は今の版
 	Policies         PolicyManager     // ポリシーの配布に使う。nil なら配布しない
 	Egress           Egress            // 外部通信の制御。nil なら端末のグループを渡さない

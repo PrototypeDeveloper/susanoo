@@ -28,6 +28,7 @@ FUZZ_TARGETS := \
 	./internal/platform/linux:FuzzParseLogons \
 	./internal/dhcp:FuzzParse \
 	./internal/gw:FuzzParseARP \
+	./internal/gw:FuzzParseND \
 	./internal/dns:FuzzParse \
 	./internal/flow:FuzzParseClientHello \
 	./internal/flow:FuzzParseHTTPRequest \

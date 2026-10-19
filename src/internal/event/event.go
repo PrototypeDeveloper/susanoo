@@ -326,6 +326,8 @@ const (
 	FindingTypeEvidence            = "evidence"             // 端末の証拠を保全した（C11）。時系列に載せるための記録
 	FindingTypeAppControl          = "app_control"          // プロセス単位の通信の制御で拒否した、または拒否に当たった接続（C7）
 	FindingTypeEnrollLock          = "enroll_lock"          // 誤った登録の証明が続き、登録コードを消した（M1。コードの総当たりの疑い）
+	FindingTypeRogueRouter         = "rogue_router"         // LAN の機器のルーター広告（G8。IPv6 の通信の横取りの疑い）
+	FindingTypeRogueDHCPv6         = "rogue_dhcpv6"         // LAN の機器が DHCPv6 のサーバーとして答えた（G8。DNS の差し替えの疑い）
 )
 
 // HasType は検知の種類に t が含まれるかどうかを返す。

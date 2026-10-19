@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"maps"
@@ -64,8 +65,27 @@ func (f *fakeEnforcer) last() syncCall {
 
 // fakeLAN は試験用の GW の LAN。試験の通信はループバックなので、LAN のネットワークを 127.0.0.0/8 とする。
 type fakeLAN struct {
-	mu      sync.Mutex
-	present map[netip.Addr]net.HardwareAddr
+	mu        sync.Mutex
+	present   map[netip.Addr]net.HardwareAddr
+	withdrawn []string // 取り消した不正なルーターの広告
+}
+
+// gwLinkLocal は試験の GW の LAN 側のリンクローカルのアドレス。
+var gwLinkLocal = netip.MustParseAddr("fe80::fe")
+
+func (l *fakeLAN) Addrs6() []netip.Addr { return []netip.Addr{gwLinkLocal} }
+
+func (l *fakeLAN) WithdrawRA(_ context.Context, src netip.Addr, mac net.HardwareAddr, prefixes []netip.Prefix, rdnss []netip.Addr) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.withdrawn = append(l.withdrawn, fmt.Sprintf("%s %s %v %v", src, mac, prefixes, rdnss))
+	return nil
+}
+
+func (l *fakeLAN) withdrawals() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.withdrawn...)
 }
 
 var gwMAC = net.HardwareAddr{2, 0, 0, 0, 0, 0xfe}

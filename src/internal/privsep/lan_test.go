@@ -4,6 +4,7 @@ package privsep
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"net/netip"
 	"strings"
@@ -52,11 +53,18 @@ func (o *fakeObserver) RecordFlow(r controller.FlowRecord) { o.add("flow " + r.S
 func (o *fakeObserver) RecordLearned(group, domain string, blocked bool) {
 	o.add("learned " + group + " " + domain)
 }
+func (o *fakeObserver) ObserveND(n controller.NDObservation) {
+	o.add(fmt.Sprintf("nd %d %s %s %v", n.Type, n.Frame, n.Src, n.Prefixes))
+}
+func (o *fakeObserver) ObserveDHCPv6(d controller.DHCPv6Observation) {
+	o.add(fmt.Sprintf("dhcp6 %s %s %v", d.Frame, d.Src, d.DNS))
+}
 
 // fakeServices は LAN 側の処理の代わりに、CONTROLLER の要求に応える。
 type fakeServices struct {
-	mu      sync.Mutex
-	members []egress.Membership
+	mu        sync.Mutex
+	members   []egress.Membership
+	withdrawn []string
 }
 
 func (s *fakeServices) Probe(_ context.Context, ip netip.Addr) (net.HardwareAddr, bool) {
@@ -65,6 +73,13 @@ func (s *fakeServices) Probe(_ context.Context, ip netip.Addr) (net.HardwareAddr
 		return hw, true
 	}
 	return nil, false
+}
+
+func (s *fakeServices) WithdrawRA(_ context.Context, src netip.Addr, mac net.HardwareAddr, prefixes []netip.Prefix, _ []netip.Addr) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.withdrawn = append(s.withdrawn, fmt.Sprintf("%s %s %v", src, mac, prefixes))
+	return nil
 }
 
 func (s *fakeServices) SetMembership(_ context.Context, m egress.Membership) error {
@@ -106,12 +121,16 @@ func TestLANLink(t *testing.T) {
 	lanSide.RecordFlow(controller.FlowRecord{SNI: "secure.test", Src: netip.MustParseAddrPort("10.77.0.101:40000")})
 	lanSide.RecordLearned("default", "new.test", false)
 	lanSide.ObserveARPRequest(mac, netip.MustParseAddr("10.77.0.150"))
+	lanSide.ObserveND(controller.NDObservation{Frame: mac, Type: 134, Src: netip.MustParseAddr("fe80::bad"), RouterLifetime: 1800,
+		Prefixes: []netip.Prefix{netip.MustParsePrefix("2001:db8:bad::/64")}})
+	lanSide.ObserveDHCPv6(controller.DHCPv6Observation{Frame: mac, Src: netip.MustParseAddr("fe80::bad"), DNS: []netip.Addr{netip.MustParseAddr("fe80::bad")}})
 
 	obs := &fakeObserver{}
 	time.Sleep(50 * time.Millisecond)
 	ctrlSide.SetObserver(obs)
-	got := strings.Join(waitCalls(t, obs, 6), "\n")
-	for _, want := range []string{"neighbor 02:00:00:00:00:65 10.77.0.101", "arp 02:00:00:00:00:65 10.77.0.150", "lease 02:00:00:00:00:65 10.77.0.101 pc-002", "dns example.test", "flow secure.test", "learned default new.test"} {
+	got := strings.Join(waitCalls(t, obs, 8), "\n")
+	for _, want := range []string{"neighbor 02:00:00:00:00:65 10.77.0.101", "arp 02:00:00:00:00:65 10.77.0.150", "lease 02:00:00:00:00:65 10.77.0.101 pc-002", "dns example.test", "flow secure.test", "learned default new.test",
+		"nd 134 02:00:00:00:00:65 fe80::bad [2001:db8:bad::/64]", "dhcp6 02:00:00:00:00:65 fe80::bad [fe80::bad]"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q が届かない\n%s", want, got)
 		}
@@ -138,7 +157,17 @@ func TestLANLink(t *testing.T) {
 	if err := ctrlSide.SetMembership(context.Background(), m); err != nil {
 		t.Fatal(err)
 	}
+	if err := ctrlSide.WithdrawRA(context.Background(), netip.MustParseAddr("fe80::bad"), mac, []netip.Prefix{netip.MustParsePrefix("2001:db8:bad::/64")}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// リンクローカルでない送信元の取り消しは、LAN 側の処理が断る。
+	if err := ctrlSide.WithdrawRA(context.Background(), netip.MustParseAddr("2001:db8::1"), mac, nil, nil); err == nil {
+		t.Error("リンクローカルでない送信元の広告の取り消しを受け付けた")
+	}
 	svc.mu.Lock()
+	if len(svc.withdrawn) != 1 || svc.withdrawn[0] != "fe80::bad 02:00:00:00:00:65 [2001:db8:bad::/64]" {
+		t.Errorf("取り消し = %v", svc.withdrawn)
+	}
 	defer svc.mu.Unlock()
 	if len(svc.members) != 1 || svc.members[0].MACs["02:00:00:00:00:65"] != "strict" || svc.members[0].Isolated[netip.MustParseAddr("10.77.0.102")] != policy.IsolateFull {
 		t.Errorf("渡したグループ = %+v", svc.members)
@@ -156,6 +185,22 @@ func TestLANLinkRejectsMalformedNotices(t *testing.T) {
 		},
 		"IPv6 の ARP の宛先": func(l *ControllerLink) {
 			l.send(noticeARPReq, arpReqBody{MAC: "02:00:00:00:00:01", Target: netip.MustParseAddr("fe80::1")})
+		},
+		"IPv4 の近隣探索": func(l *ControllerLink) {
+			l.send(noticeND, ndBody{MAC: "02:00:00:00:00:01", Type: 134, Src: netip.MustParseAddr("10.0.0.1")})
+		},
+		"近隣探索でない種類": func(l *ControllerLink) {
+			l.send(noticeND, ndBody{MAC: "02:00:00:00:00:01", Type: 128, Src: netip.MustParseAddr("fe80::1")})
+		},
+		"多すぎるネットワーク": func(l *ControllerLink) {
+			ps := make([]netip.Prefix, 17)
+			for i := range ps {
+				ps[i] = netip.MustParsePrefix("2001:db8::/64")
+			}
+			l.send(noticeND, ndBody{MAC: "02:00:00:00:00:01", Type: 134, Src: netip.MustParseAddr("fe80::1"), Prefixes: ps})
+		},
+		"IPv4 の DHCPv6 の DNS": func(l *ControllerLink) {
+			l.send(noticeDHCPv6, dhcp6Body{MAC: "02:00:00:00:00:01", Src: netip.MustParseAddr("fe80::1"), DNS: []netip.Addr{netip.MustParseAddr("10.0.0.1")}})
 		},
 		"知らない知らせ": func(l *ControllerLink) { l.send("isolate", map[string]string{"id": "pc-001"}) },
 		"知らない項目を含む知らせ": func(l *ControllerLink) {

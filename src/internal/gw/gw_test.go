@@ -69,9 +69,14 @@ func TestRouterApply(t *testing.T) {
 	if err := os.WriteFile(forward, []byte("0\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	router := &Router{Rules: nft.Router{LAN: "lan0", WAN: "wan0", ManagementPort: 8443}, NFT: r, forwardPath: forward}
+	acceptRA := filepath.Join(t.TempDir(), "accept_ra")
+	os.WriteFile(acceptRA, []byte("1\n"), 0o644)
+	router := &Router{Rules: nft.Router{LAN: "lan0", WAN: "wan0", ManagementPort: 8443}, NFT: r, forwardPath: forward, acceptRAPath: acceptRA}
 	if err := router.Apply(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(acceptRA); string(got) != "0\n" {
+		t.Errorf("LAN のルーター広告の受け付け = %q", got)
 	}
 	if len(r.scripts) != 1 || !strings.Contains(r.scripts[0], `oifname "wan0" masquerade`) {
 		t.Errorf("スクリプト = %v", r.scripts)
@@ -79,7 +84,7 @@ func TestRouterApply(t *testing.T) {
 	if got, _ := os.ReadFile(forward); string(got) != "1\n" {
 		t.Errorf("転送の設定 = %q", got)
 	}
-	bad := &Router{Rules: nft.Router{LAN: "x", WAN: "x", ManagementPort: 8443}, NFT: r, forwardPath: forward}
+	bad := &Router{Rules: nft.Router{LAN: "x", WAN: "x", ManagementPort: 8443}, NFT: r, forwardPath: forward, acceptRAPath: acceptRA}
 	if err := bad.Apply(context.Background()); err == nil {
 		t.Error("不正なルールを適用できた")
 	}

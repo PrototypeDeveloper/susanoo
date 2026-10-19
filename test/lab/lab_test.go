@@ -80,13 +80,14 @@ type device struct {
 }
 
 type host struct {
-	MAC       string `json:"mac"`
-	IP        string `json:"ip"`
-	Hostname  string `json:"hostname"`
-	DeviceID  string `json:"device_id"`
-	Isolation string `json:"isolation"`
-	Reason    string `json:"reason"`
-	Risk      int    `json:"risk"`
+	MAC       string   `json:"mac"`
+	IP        string   `json:"ip"`
+	Hostname  string   `json:"hostname"`
+	DeviceID  string   `json:"device_id"`
+	Isolation string   `json:"isolation"`
+	Reason    string   `json:"reason"`
+	Risk      int      `json:"risk"`
+	IPv6      []string `json:"ipv6"`
 }
 
 type auditRecord struct {
@@ -308,6 +309,18 @@ exit 0
 // 疑似インターネットには LAN への経路を設定しない（GW の NAT が必要）。
 func buildTopology(t *testing.T, machines []*machine, extraInet ...string) {
 	t.Helper()
+	buildTopologyWith(t, machines, false, extraInet...)
+}
+
+// buildTopology6 は buildTopology と同じだが、IPv6 を止めない（リンクローカルのアドレスを使う試験のため）。
+// 重複の確認を省いてアドレスをすぐに使えるようにし、スイッチはマルチキャストをすべてのポートに流す。
+func buildTopology6(t *testing.T, machines []*machine) {
+	t.Helper()
+	buildTopologyWith(t, machines, true)
+}
+
+func buildTopologyWith(t *testing.T, machines []*machine, ipv6 bool, extraInet ...string) {
+	t.Helper()
 	all := []string{nsInet, nsGW, nsSW}
 	for _, m := range machines {
 		all = append(all, m.ns)
@@ -315,7 +328,12 @@ func buildTopology(t *testing.T, machines []*machine, extraInet ...string) {
 	for _, ns := range all {
 		ip(t, "netns", "add", ns)
 		ip(t, "-n", ns, "link", "set", "lo", "up")
-		sh(t, "ip", "netns", "exec", ns, "sysctl", "-qw", "net.ipv6.conf.all.disable_ipv6=1")
+		// IPv6 を使う試験でも、スイッチと疑似インターネットでは止める（スイッチのポートが LAN の機器として見えないように）。
+		if ipv6 && ns != nsSW && ns != nsInet {
+			sh(t, "ip", "netns", "exec", ns, "sysctl", "-qw", "net.ipv6.conf.all.accept_dad=0", "net.ipv6.conf.default.accept_dad=0")
+		} else {
+			sh(t, "ip", "netns", "exec", ns, "sysctl", "-qw", "net.ipv6.conf.all.disable_ipv6=1")
+		}
 	}
 	t.Cleanup(func() {
 		for _, ns := range all {
@@ -325,6 +343,9 @@ func buildTopology(t *testing.T, machines []*machine, extraInet ...string) {
 	ip(t, "-n", nsGW, "link", "add", "wan0", "type", "veth", "peer", "name", "eth0", "netns", nsInet)
 	ip(t, "-n", nsGW, "link", "add", "lan0", "type", "veth", "peer", "name", "p-gw", "netns", nsSW)
 	ip(t, "-n", nsSW, "link", "add", "br0", "type", "bridge")
+	if ipv6 {
+		ip(t, "-n", nsSW, "link", "set", "br0", "type", "bridge", "mcast_snooping", "0")
+	}
 	ports := []string{"p-gw"}
 	for _, m := range machines {
 		ip(t, "-n", m.ns, "link", "add", "eth0", "type", "veth", "peer", "name", m.port, "netns", nsSW)
