@@ -53,6 +53,9 @@ func (c *Controller) getStatus(w http.ResponseWriter, _ *http.Request, _ pki.Ide
 		if !d.CertExpiry.IsZero() && d.CertExpiry.Sub(now) < certWarning && d.Revoked.IsZero() {
 			st.ExpiringCerts = append(st.ExpiringCerts, c.deviceViewLocked(d))
 		}
+		if d.Lagging && d.Revoked.IsZero() {
+			st.Lagging = append(st.Lagging, c.deviceViewLocked(d))
+		}
 		if d.ClockSkewed && d.Revoked.IsZero() {
 			st.ClockSkewed = append(st.ClockSkewed, c.deviceViewLocked(d))
 		}
@@ -82,7 +85,7 @@ func (c *Controller) getStatus(w http.ResponseWriter, _ *http.Request, _ pki.Ide
 	st.Rules = c.rulesVersion()
 	st.Intel = c.intelSummary()
 	slices.SortFunc(st.ExpiringCerts, func(a, b api.Device) int { return a.CertExpiry.Compare(b.CertExpiry) })
-	for _, list := range [][]api.Device{st.ClockSkewed, st.Throttled} {
+	for _, list := range [][]api.Device{st.ClockSkewed, st.Throttled, st.Lagging} {
 		slices.SortFunc(list, func(a, b api.Device) int { return strings.Compare(a.ID, b.ID) })
 	}
 

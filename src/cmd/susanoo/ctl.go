@@ -335,6 +335,9 @@ func printDevices(w io.Writer, list ...api.Device) {
 		case d.Away:
 			states = append(states, "不在")
 		}
+		if d.Lagging {
+			states = append(states, "指示の未適用")
+		}
 		if d.ClockSkewed {
 			states = append(states, "時刻のずれ "+clockOffset(d))
 		}

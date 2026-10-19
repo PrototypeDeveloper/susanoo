@@ -149,6 +149,12 @@ func ctlStatus(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "  %s\t%s\n", d.ID, d.CertExpiry.Local().Format("2006-01-02 15:04"))
 		}
 	}
+	if len(st.Lagging) > 0 {
+		fmt.Fprintln(stdout, "\n指示を適用していない端末（CLIENT の解析部が乗っ取られているか、自己隔離などに失敗している恐れがあります）:")
+		for _, d := range st.Lagging {
+			fmt.Fprintf(stdout, "  %s\n", d.ID)
+		}
+	}
 	if len(st.ClockSkewed) > 0 {
 		fmt.Fprintf(stdout, "\n時刻のずれが上限（%s）を超えている端末:\n", st.MaxClockSkew)
 		for _, d := range st.ClockSkewed {

@@ -120,7 +120,7 @@ func TestEnroll(t *testing.T) {
 	}
 	writeJSON(t, filepath.Join(l.dir, pc.id+".json"), map[string]any{
 		"controller": controllerAddr, "pki_dir": pc.id, "state_dir": pc.id + "-state", "heartbeat_interval": "1s",
-		"files":          map[string]any{"watch": []string{}, "persistence": []string{}, "privilege": []string{}, "sensitive": []map[string]any{}, "protect": []string{}},
+		"files":          map[string]any{"watch": []string{}, "persistence": []string{}, "privilege": []string{}, "sensitive": []map[string]any{}, "protect": []string{}, "wide": []string{}},
 		"kernel_modules": false, "logons": map[string]any{"enabled": false},
 	})
 	start(t, "CLIENT "+pc.id, pc.ns, nil, *susanooBin, "client", "-config", filepath.Join(l.dir, pc.id+".json"))

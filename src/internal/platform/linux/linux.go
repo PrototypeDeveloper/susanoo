@@ -99,6 +99,8 @@ type Platform struct {
 	throttled atomic.Bool   // 資源の上限を超えて、監視を間引いている（2l）
 	thinner   *limiter      // 間引いている間に通すイベントの数
 	dropped   atomic.Uint64 // 間引いている間に捨てたイベントの数
+
+	neigh neighborPins // 固定した ARP の表のエントリ（2m-1）
 }
 
 var _ platform.Platform = (*Platform)(nil)

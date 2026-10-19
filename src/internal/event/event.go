@@ -330,6 +330,9 @@ const (
 	FindingTypeRogueDHCPv6         = "rogue_dhcpv6"         // LAN の機器が DHCPv6 のサーバーとして答えた（G8。DNS の差し替えの疑い）
 	FindingTypeClockSkew           = "clock_skew"           // 端末の時刻が CONTROLLER と大きくずれている（相関の精度が落ちる。時刻の改ざんの疑い）
 	FindingTypeResourceLimit       = "resource_limit"       // CLIENT が資源の上限を超え、監視を間引き始めた（大量の操作で監視を妨げる攻撃の疑い）
+	FindingTypeCommandNotApplied   = "command_not_applied"  // ハートビートは届くのに、端末が指示を適用しない（乗っ取られた解析部が指示を渡していないか、適用の失敗）
+	FindingTypeARPPoisoning        = "arp_poisoning"        // 端末の ARP の表で、GW のアドレスが別の MAC アドレスを指していた（ユニキャストの ARP のなりすまし）
+	FindingTypeWideMassChange      = "wide_mass_change"     // 守る場所の外で、1 つのプロセスが短時間に大量の既存のファイルを変更・削除した（T7）
 )
 
 // HasType は検知の種類に t が含まれるかどうかを返す。

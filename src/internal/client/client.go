@@ -109,6 +109,13 @@ func (a *Agent) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
+			// 執行部の監視の後始末（固定した ARP の表のエントリを消すなど）を待つ。
+			if watchErr != nil {
+				select {
+				case <-watchErr:
+				case <-time.After(5 * time.Second):
+				}
+			}
 			return nil
 		case e := <-events:
 			a.enqueue(e)

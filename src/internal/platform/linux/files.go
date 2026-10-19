@@ -28,6 +28,8 @@ import (
 //     検知結果にする（C4）
 //   - 認証情報のファイルを、ふだん読むプログラム以外が読んだら検知結果にする（C8 の認証情報へのアクセス、C9 の鍵の置き場所の監視）
 //   - 守る場所（文書など）で、1 つのプロセスが短時間に大量のファイルを変更したら検知結果にする（T7 ランサムウェア）
+//   - 守る場所の外（Wide のファイルシステム）でも、1 つのプロセスが短時間に大量の既存のファイルを書き換えるか消したら
+//     検知結果にする（2m-1。そのプロセスが作ったばかりのファイルは数えない）
 //
 // 場所はディレクトリの印（root でなくても使える）で監視し、認証情報のファイルそのものにはファイルの印を付ける
 // （ディレクトリの印で開く操作を受けると、ディレクトリの中のすべての開く操作が届いて重いため）。
@@ -50,16 +52,19 @@ type FileConfig struct {
 	Protect     []string        // 大量の変更を監視する場所（下の階層を含む）
 	MassFiles   int             // この数以上のファイルを MassWindow の間に変更したら検知する。既定 200
 	MassWindow  time.Duration   // 既定 30 秒
+	Wide        []string        // 守る場所の外の大量の変更を監視するファイルシステム（その上の場所で指定する）
+	WideFiles   int             // 守る場所の外で、この数以上の既存のファイルを MassWindow の間に書き換えるか消したら検知する。既定 1000
 }
 
 // enabled は監視する場所が 1 つでもあるかを返す。
 func (c FileConfig) enabled() bool {
-	return len(c.Paths) > 0 || len(c.Persistence) > 0 || len(c.Privilege) > 0 || len(c.Sensitive) > 0 || len(c.Protect) > 0
+	return len(c.Paths) > 0 || len(c.Persistence) > 0 || len(c.Privilege) > 0 || len(c.Sensitive) > 0 || len(c.Protect) > 0 || len(c.Wide) > 0
 }
 
 const (
 	defaultMassFiles  = 200
 	defaultMassWindow = 30 * time.Second
+	defaultWideFiles  = 1000
 	massRealert       = 5 * time.Minute // 同じプロセスの大量の変更を、続けて検知結果にしない時間
 	maxProtectedDirs  = 20000
 	fileDedupe        = 2 * time.Second
@@ -71,6 +76,8 @@ const (
 	openMask          = fanOpen | fanEventOnChild
 	changeMask        = fanCreate | fanDelete | fanMovedTo | fanCloseWrite
 	findingMask       = fanCreate | fanMovedTo | fanCloseWrite | fanAttrib // 永続化と権限の場所で検知結果にする操作
+	wideMarkMask      = changeMask | fanMovedFrom | fanOnDir
+	wideChangeMask    = fanDelete | fanMovedFrom | fanCloseWrite // 守る場所の外で数える操作（既存のファイルの書き換え、名前の変更、削除）
 )
 
 // watchKind は監視する場所の種類。
@@ -127,6 +134,21 @@ type massCount struct {
 	alerted time.Time
 }
 
+// wideKey はディレクトリの中のエントリ。
+type wideKey struct {
+	dir  fidKey
+	name string
+}
+
+// wideCount は守る場所の外の、1 つのプロセスの変更の数。
+type wideCount struct {
+	start   time.Time
+	created map[wideKey]bool // 時間枠の中でこのプロセスが作ったファイル（作ったばかりのファイルへの書き込みは数えない）
+	changed map[wideKey]bool
+	samples []string
+	alerted time.Time
+}
+
 type fileMonitor struct {
 	f        *os.File
 	fd       int
@@ -145,6 +167,8 @@ type fileMonitor struct {
 	filePaths []sensitiveFile   // 印を付け直す認証情報のファイル
 	protected map[fidKey]string
 	counts    map[int32]*massCount
+	wideFS    map[string]bool // 守る場所の外も数えるファイルシステム（fsid）
+	wide      map[int32]*wideCount
 	recent    map[string]time.Time
 	findings  map[string]time.Time
 	massOn    bool
@@ -158,13 +182,17 @@ func newFileMonitor(cfg FileConfig, procs *procCache, agents *agentMatcher, log 
 	if cfg.MassWindow <= 0 {
 		cfg.MassWindow = defaultMassWindow
 	}
+	if cfg.WideFiles <= 0 {
+		cfg.WideFiles = defaultWideFiles
+	}
 	fd, err := fanotifyInit(fanClassNotif|fanCloexec|fanNonblock|fanReportDFIDNm|fanReportFID, syscall.O_RDONLY|syscall.O_CLOEXEC)
 	if err != nil {
 		return nil, fmt.Errorf("fanotify_init（FID）: %w", err)
 	}
 	m := &fileMonitor{fd: fd, cfg: cfg, self: os.Getpid(), log: log, limiter: newLimiter(50, 200), flimiter: newLimiter(10, 50), procs: procs, agents: agents,
 		watched: map[fidKey]*watchDir{}, files: map[fidKey]sensitiveFile{}, fileKeys: map[string]fidKey{},
-		protected: map[fidKey]string{}, counts: map[int32]*massCount{}, recent: map[string]time.Time{}, findings: map[string]time.Time{}}
+		protected: map[fidKey]string{}, counts: map[int32]*massCount{}, wideFS: map[string]bool{}, wide: map[int32]*wideCount{},
+		recent: map[string]time.Time{}, findings: map[string]time.Time{}}
 
 	for _, l := range []struct {
 		paths []string
@@ -209,7 +237,19 @@ func newFileMonitor(cfg FileConfig, procs *procCache, agents *agentMatcher, log 
 		marked[fsid] = true
 		m.massOn = true
 	}
-	if len(m.watched) == 0 && len(m.files) == 0 && len(m.filePaths) == 0 && !m.massOn {
+	for _, root := range cfg.Wide {
+		fsid, err := fsidOfPath(root)
+		if err != nil || m.wideFS[fsid] {
+			continue
+		}
+		// 守る場所と同じファイルシステムなら、印に名前の変更（元の名前）を足す（同じ印に重ねると操作が加わる）。
+		if err := fanotifyMark(fd, fanMarkAdd|fanMarkFS, wideMarkMask, root); err != nil {
+			log.Info("守る場所の外の大量の変更の監視を使えません（root 権限が必要）", "場所", root, "理由", err)
+			continue
+		}
+		m.wideFS[fsid] = true
+	}
+	if len(m.watched) == 0 && len(m.files) == 0 && len(m.filePaths) == 0 && !m.massOn && len(m.wideFS) == 0 {
 		syscall.Close(fd)
 		return nil, errors.New("fanotify: 監視できる場所がありません")
 	}
@@ -421,19 +461,82 @@ func (m *fileMonitor) handle(ev fidEvent, now time.Time) []*event.Event {
 		}
 	}
 
-	if dir, ok := m.protected[ev.dir]; ok && ev.mask&changeMask != 0 {
-		p := filepath.Join(dir, ev.name)
-		if ev.mask&fanOnDir != 0 {
-			if ev.mask&fanCreate != 0 && len(m.protected) < maxProtectedDirs {
-				if key, err := dirKey(p); err == nil {
-					m.protected[key] = p // 新しく作られたディレクトリも監視する
+	if dir, ok := m.protected[ev.dir]; ok {
+		if ev.mask&changeMask != 0 {
+			p := filepath.Join(dir, ev.name)
+			if ev.mask&fanOnDir != 0 {
+				if ev.mask&fanCreate != 0 && len(m.protected) < maxProtectedDirs {
+					if key, err := dirKey(p); err == nil {
+						m.protected[key] = p // 新しく作られたディレクトリも監視する
+					}
 				}
+			} else if e := m.count(ev.pid, p, now); e != nil {
+				out = append(out, e)
 			}
-		} else if e := m.count(ev.pid, p, now); e != nil {
+		}
+	} else if ev.mask&fanOnDir == 0 && ev.name != "" && len(ev.dir) >= 8 && m.wideFS[string(ev.dir[:8])] {
+		if e := m.countWide(ev, now); e != nil {
 			out = append(out, e)
 		}
 	}
 	return out
+}
+
+// fsidOfPath は、場所 path のファイルシステムの fsid を、イベントの識別子の先頭（8 バイト）と同じ形で返す。
+func fsidOfPath(path string) (string, error) {
+	key, err := dirKey(path)
+	if err != nil || len(key) < 8 {
+		return "", fmt.Errorf("linux: %s のファイルシステムを識別できません: %w", path, err)
+	}
+	return string(key[:8]), nil
+}
+
+// countWide は、守る場所の外での、プロセスの既存のファイルの書き換えと削除を数え、MassWindow の間に WideFiles 以上になったら
+// 検知結果を返す。プロセスが時間枠の中で作ったファイルは数えない（ビルドや展開で作るファイル）。
+func (m *fileMonitor) countWide(ev fidEvent, now time.Time) *event.Event {
+	c := m.wide[ev.pid]
+	if c == nil {
+		c = &wideCount{}
+		m.wide[ev.pid] = c
+	}
+	if c.changed == nil || now.Sub(c.start) > m.cfg.MassWindow {
+		c.start, c.created, c.changed, c.samples = now, map[wideKey]bool{}, map[wideKey]bool{}, nil
+	}
+	k := wideKey{ev.dir, ev.name}
+	// fanotify は読み出す前の同じファイルのイベントをまとめるので、作成と書き込みが 1 つのイベントで届くことがある。
+	// ビルドや展開は多くのファイルを作るので、作ったファイルは数えるファイルより多く覚える。
+	if ev.mask&(fanCreate|fanMovedTo) != 0 && len(c.created) < 16*m.cfg.WideFiles {
+		c.created[k] = true
+	}
+	if ev.mask&wideChangeMask == 0 || c.created[k] || c.changed[k] || len(c.changed) >= 4*m.cfg.WideFiles {
+		return nil
+	}
+	c.changed[k] = true
+	if len(c.samples) < 3 {
+		c.samples = append(c.samples, ev.name)
+	}
+	n := len(c.changed)
+	if n < m.cfg.WideFiles || now.Sub(c.alerted) < massRealert {
+		return nil
+	}
+	c.alerted = now
+	if len(m.wide) > 1024 {
+		for p, x := range m.wide {
+			if now.Sub(x.start) > m.cfg.MassWindow && now.Sub(x.alerted) > massRealert {
+				delete(m.wide, p)
+			}
+		}
+	}
+	proc, anc := m.procs.inspect(int(ev.pid))
+	msg := fmt.Sprintf("%s が %s 以内に、守る場所の外で %d 個以上の既存のファイルを書き換えるか消しました（例: %s）",
+		who(proc, int(ev.pid)), m.cfg.MassWindow, n, strings.Join(c.samples, "、"))
+	e := event.New(event.ClassDetectionFinding, event.FindingCreate, event.SeverityMedium, now)
+	e.Message = msg
+	e.FindingInfo = &event.FindingInfo{UID: randomID(), Title: "守る場所の外の大量の変更", Desc: msg, Types: []string{event.FindingTypeWideMassChange}}
+	e.Evidences = []event.Evidence{{Process: proc}}
+	e.Unmapped = map[string]any{"wide_mass_change": map[string]any{"files": n, "window": m.cfg.MassWindow.String()}}
+	m.agents.annotate(e, proc, anc)
+	return e
 }
 
 // dedupeFinding は、同じ種類、ファイル、プロセスの検知結果を findingDedupe の間にもう出していれば false を返す。

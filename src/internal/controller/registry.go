@@ -37,6 +37,11 @@ type device struct {
 	Version   uint64                `json:"version,omitempty"`   // 指示の版数
 	Evidence  uint64                `json:"evidence,omitempty"`  // 証拠を集める要求の番号（C11）
 	AppsHash  string                `json:"apps_hash,omitempty"` // 最後に指示に入れたプロセス単位の通信の制御のハッシュ（変わったら版数を上げる）
+	// UpdatesHash は最後に指示に入れた更新サーバーのハッシュ（変わったら版数を上げる。2m-1）。
+	UpdatesHash string `json:"updates_hash,omitempty"`
+	Lagging     bool   `json:"lagging,omitempty"` // ハートビートは届くのに、指示を適用しないままになっている（2m-1）
+	lagSince    time.Time
+	lagBeats    int
 
 	AppControl policy.AppMode `json:"app_control,omitempty"` // CLIENT が報告した、効いているプロセス単位の通信の制御の扱い（C7）
 	Pending    string         `json:"pending,omitempty"`     // 承認待ちの隔離の理由
@@ -80,6 +85,7 @@ func (d *device) view(macs []string) api.Device {
 		ClockOffset: d.ClockOffset.Round(100 * time.Millisecond).Seconds(),
 		ClockSkewed: d.ClockSkewed,
 		ClockSynced: d.ClockSynced,
+		Lagging:     d.Lagging,
 	}
 	if d.Resources != nil {
 		r := *d.Resources

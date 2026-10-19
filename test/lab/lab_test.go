@@ -86,6 +86,7 @@ type device struct {
 	ClockOffset float64 `json:"clock_offset"`
 	ClockSkewed bool    `json:"clock_skewed"`
 	ClockSynced *bool   `json:"clock_synced"`
+	Lagging     bool    `json:"lagging"`
 }
 
 type host struct {
@@ -604,7 +605,7 @@ func (l *lab) setup(machines []*machine) {
 			"controller": controllerAddr, "pki_dir": m.id, "state_dir": m.id + "-state", "heartbeat_interval": "1s",
 			"honeytokens": []map[string]string{{"path": l.token(m.id), "kind": "aws"}},
 			"files": map[string]any{"watch": []string{}, "persistence": []string{}, "privilege": []string{},
-				"sensitive": []map[string]any{}, "protect": []string{}},
+				"sensitive": []map[string]any{}, "protect": []string{}, "wide": []string{}},
 			"kernel_modules": false, "logons": map[string]any{"enabled": false},
 		})
 	}

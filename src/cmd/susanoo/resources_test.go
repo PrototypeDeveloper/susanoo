@@ -32,10 +32,10 @@ func TestPrintDeviceStates(t *testing.T) {
 	var buf bytes.Buffer
 	printDevices(&buf,
 		api.Device{ID: "pc-001", Group: "default", ClockSkewed: true, ClockOffset: 300, Resources: &api.ResourceUsage{Throttled: true}},
-		api.Device{ID: "pc-002", Group: "default", ClockOffset: -0.5, Away: true},
+		api.Device{ID: "pc-002", Group: "default", ClockOffset: -0.5, Away: true, Lagging: true},
 	)
 	out := buf.String()
-	for _, want := range []string{"時刻のずれ +300.0 秒（進んでいる）、監視を間引き中", "不在"} {
+	for _, want := range []string{"時刻のずれ +300.0 秒（進んでいる）、監視を間引き中", "不在、指示の未適用"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("%q がありません:\n%s", want, out)
 		}

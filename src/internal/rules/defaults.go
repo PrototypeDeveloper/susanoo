@@ -31,6 +31,9 @@ var Defaults = []Rule{
 	{ID: "tamper", Name: "防御の仕組みの改ざん", Finding: event.FindingTypeTamper, Mode: ModeEnforce, Score: 0}, // 記録して警告する
 	{ID: "clock-skew", Name: "端末の時刻のずれ", Finding: event.FindingTypeClockSkew, Mode: ModeEnforce, Score: 0},
 	{ID: "resource-limit", Name: "CLIENT の資源の上限", Finding: event.FindingTypeResourceLimit, Mode: ModeEnforce, Score: 0},
+	{ID: "command-not-applied", Name: "指示の未適用", Finding: event.FindingTypeCommandNotApplied, Mode: ModeEnforce, Score: 0},
+	// 端末の ARP の表のなりすまし（2m-1）。知らせた端末は被害の側なので加点しない。なりすました機器は gateway-spoofing で扱う。
+	{ID: "arp-poisoning", Name: "端末の ARP の表のなりすまし", Finding: event.FindingTypeARPPoisoning, Mode: ModeEnforce, Score: 0},
 	// 振る舞いの検知（G6）は誤検知が出やすいため、試験運用から始める。
 	{ID: "beacon", Name: "周期的な通信", Finding: event.FindingTypeBeacon, Mode: ModeMonitor, Score: 40},
 	{ID: "large-upload", Name: "大量の送信", Finding: event.FindingTypeLargeUpload, Mode: ModeMonitor, Score: 50},
@@ -45,6 +48,8 @@ var Defaults = []Rule{
 	{ID: "privilege-escalation", Name: "権限昇格", Finding: event.FindingTypePrivilegeEscalation, Mode: ModeMonitor, Score: 20},
 	{ID: "credential-access", Name: "認証情報へのアクセス", Finding: event.FindingTypeCredentialAccess, Mode: ModeMonitor, Score: 50},
 	{ID: "kernel-module", Name: "カーネルモジュールの読み込み", Finding: event.FindingTypeKernelModule, Mode: ModeMonitor, Score: 30},
+	// 守る場所の外の大量の変更（2m-1）。ビルドの掃除、パッケージの更新、git の切り替えでも当てはまるため、試験運用から始める。
+	{ID: "wide-mass-change", Name: "守る場所の外の大量の変更", Finding: event.FindingTypeWideMassChange, Mode: ModeMonitor, Score: 60},
 	// プロセス単位の通信の制御（C7）で拒否した（試験運用なら拒否に当たった）接続。ポリシーで決めた通りの拒否なので点は小さい。
 	{ID: "app-control", Name: "アプリの通信の拒否", Finding: event.FindingTypeAppControl, Mode: ModeMonitor, Score: 10},
 

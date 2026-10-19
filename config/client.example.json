@@ -54,7 +54,9 @@
       "/home/user/ドキュメント"
     ],
     "mass_files": 200,
-    "mass_window": "30s"
+    "mass_window": "30s",
+    "wide": ["/", "/home", "/srv"],
+    "wide_files": 1000
   },
   "kernel_modules": true,
   "logons": {

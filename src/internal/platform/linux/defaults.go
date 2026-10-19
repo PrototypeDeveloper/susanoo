@@ -2,7 +2,10 @@
 
 package linux
 
-import "path/filepath"
+import (
+	"os"
+	"path/filepath"
+)
 
 // 既定で監視する場所。存在しない場所は監視しない。利用者のホームは起動時に /home/* を調べる。
 
@@ -66,6 +69,18 @@ func DefaultSensitive() []SensitiveSpec {
 		)
 	}
 	return specs
+}
+
+// DefaultWidePaths は既定で守る場所の外の大量の変更を監視するファイルシステム（その上の場所）を返す。
+// 同じファイルシステムの場所は 1 つにまとめて監視する。
+func DefaultWidePaths() []string {
+	var paths []string
+	for _, p := range []string{"/", "/home", "/srv"} {
+		if fi, err := os.Stat(p); err == nil && fi.IsDir() {
+			paths = append(paths, p)
+		}
+	}
+	return paths
 }
 
 // DefaultProtectPaths は既定で大量の変更を監視する場所（利用者の文書など）を返す。

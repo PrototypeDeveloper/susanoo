@@ -9,6 +9,7 @@ package platform
 
 import (
 	"context"
+	"net"
 	"net/netip"
 	"slices"
 	"time"
@@ -121,6 +122,16 @@ type Resources interface {
 type Clock interface {
 	// ClockSynchronized は、OS の時刻が NTP などで同期しているかを返す。
 	ClockSynchronized() (bool, error)
+}
+
+// Neighbors は ARP の表を読み、エントリを固定できる Platform（2m-1）。
+type Neighbors interface {
+	// Neighbor は IPv4 アドレス ip の、解決済みの ARP の表のエントリの MAC アドレスと装置の名前を返す。なければ ok が偽。
+	Neighbor(ip netip.Addr) (mac net.HardwareAddr, iface string, ok bool, err error)
+	// PinNeighbor は装置 iface の ip のエントリを mac に固定する（ほかの ARP で書き換えられないようにする）。
+	PinNeighbor(ip netip.Addr, iface string, mac net.HardwareAddr) error
+	// UnpinNeighbors は固定したエントリを消す（次に通信するときに改めて解決させる）。
+	UnpinNeighbors() error
 }
 
 // Platform は OS の機能。実装は OS ごとに用意する。

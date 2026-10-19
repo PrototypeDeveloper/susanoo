@@ -642,11 +642,18 @@ func (c *Controller) commandLocked(d *device) (sign.Envelope, error) {
 		d.Version = nextVersion(d.Version, c.now())
 		c.saveLocked()
 	}
-	cmd := api.Command{DeviceID: d.ID, Version: d.Version, Isolation: d.Isolation, Evidence: d.Evidence, Apps: g.Apps, IssuedAt: c.now().UTC(),
-		Release: c.releaseOfferLocked(d)}
+	var updates []netip.Prefix
 	if d.Isolation == policy.IsolateManagementAndUpdates {
-		cmd.Updates = g.UpdatePrefixes()
+		updates = g.UpdatePrefixes()
 	}
+	// 隔離中に更新サーバーが変わったら（ポリシーの配布）、版数を上げて CLIENT の自己隔離にも反映させる。
+	if h := prefixesHash(updates); h != d.UpdatesHash {
+		d.UpdatesHash = h
+		d.Version = nextVersion(d.Version, c.now())
+		c.saveLocked()
+	}
+	cmd := api.Command{DeviceID: d.ID, Version: d.Version, Isolation: d.Isolation, Updates: updates, Evidence: d.Evidence, Apps: g.Apps, IssuedAt: c.now().UTC(),
+		Release: c.releaseOfferLocked(d), Gateway: c.gatewayInfo()}
 	payload, err := json.Marshal(cmd)
 	if err != nil {
 		return sign.Envelope{}, err

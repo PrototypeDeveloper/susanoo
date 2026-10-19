@@ -204,7 +204,7 @@ func TestClient(t *testing.T) {
 		"files": map[string]any{
 			"watch": []string{watched}, "persistence": []string{persist}, "privilege": []string{},
 			"sensitive": []map[string]any{{"path": secret, "readers": []string{"ssh"}}},
-			"protect":   []string{protected}, "mass_files": 50, "mass_window": "10s",
+			"protect":   []string{protected}, "mass_files": 50, "mass_window": "10s", "wide": []string{},
 		},
 		"honeytokens": []map[string]any{{"path": decoy, "kind": "aws"}},
 		"evidence":    map[string]any{"logs": []string{authLog}},

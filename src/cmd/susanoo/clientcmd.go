@@ -127,13 +127,15 @@ type fileConfig struct {
 	Protect     []string              `json:"protect"`     // 大量の変更を監視する場所（下の階層を含む）
 	MassFiles   int                   `json:"mass_files"`  // 既定 200
 	MassWindow  config.Duration       `json:"mass_window"` // 既定 30s
+	Wide        []string              `json:"wide"`        // 守る場所の外の大量の変更を監視するファイルシステム（その上の場所）。省略すると /、/home、/srv
+	WideFiles   int                   `json:"wide_files"`  // 守る場所の外で、この数以上の既存のファイルを書き換えるか消したら検知する。既定 1000
 }
 
 // fileSettings は設定ファイルの files を、省略した一覧に既定の場所を入れて、Platform の設定にする。
 func fileSettings(f *fileConfig) linux.FileConfig {
 	cfg := linux.FileConfig{
 		Paths: linux.DefaultWatchPaths(), Persistence: linux.DefaultPersistencePaths(), Privilege: linux.DefaultPrivilegePaths(),
-		Sensitive: linux.DefaultSensitive(), Protect: linux.DefaultProtectPaths(),
+		Sensitive: linux.DefaultSensitive(), Protect: linux.DefaultProtectPaths(), Wide: linux.DefaultWidePaths(),
 	}
 	if f == nil {
 		return cfg
@@ -153,6 +155,10 @@ func fileSettings(f *fileConfig) linux.FileConfig {
 	if f.Protect != nil {
 		cfg.Protect = f.Protect
 	}
+	if f.Wide != nil {
+		cfg.Wide = f.Wide
+	}
+	cfg.WideFiles = f.WideFiles
 	cfg.MassFiles, cfg.MassWindow = f.MassFiles, f.MassWindow.Or(0)
 	return cfg
 }

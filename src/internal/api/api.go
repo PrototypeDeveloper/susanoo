@@ -161,7 +161,15 @@ type Command struct {
 	Evidence  uint64                `json:"evidence,omitempty"`  // 証拠を集める要求の番号。適用済みより大きければ集める（C11）
 	Apps      *policy.AppControl    `json:"apps,omitempty"`      // プロセス単位の通信の制御（C7。端末のグループの設定。なければ制御しない）
 	Release   *ReleaseOffer         `json:"release,omitempty"`   // 入れ替えを勧めるリリース（版数とは別に、受け取るたびに確かめる）
+	Gateway   *GatewayInfo          `json:"gateway,omitempty"`   // GW の LAN 側のアドレスと MAC アドレス（端末の ARP の表と比べる。版数が適用済み以上なら受け取る）
 	IssuedAt  time.Time             `json:"issued_at"`
+}
+
+// GatewayInfo は GW の LAN 側のアドレスと MAC アドレス（2m-1）。CLIENT は自分の ARP の表のエントリと比べ、
+// 違えば（ユニキャストの ARP のなりすまし）、エントリを正しい MAC アドレスに固定して知らせる。
+type GatewayInfo struct {
+	IP  netip.Addr `json:"ip"`
+	MAC string     `json:"mac"`
 }
 
 // ReleaseManifest はリリースの目録（sign.PurposeRelease で、管理者の手元のポリシーの署名の鍵で署名する）。
@@ -429,6 +437,7 @@ type Device struct {
 	ClockOffset float64               `json:"clock_offset,omitempty"` // 端末の時刻の CONTROLLER とのずれ（秒。進んでいれば正）
 	ClockSkewed bool                  `json:"clock_skewed,omitempty"` // 時刻のずれが上限を超えている
 	ClockSynced *bool                 `json:"clock_synced,omitempty"` // 端末が報告した時刻の同期の状態
+	Lagging     bool                  `json:"lagging,omitempty"`      // ハートビートは届くのに、指示を適用しないままになっている
 }
 
 // CertificateResponse は更新した証明書。
@@ -534,6 +543,7 @@ type Status struct {
 	MaxClockSkew   string          `json:"max_clock_skew,omitempty"`  // 端末の時刻のずれの上限
 	ClockSkewed    []Device        `json:"clock_skewed,omitempty"`    // 時刻のずれが上限を超えている端末
 	Throttled      []Device        `json:"throttled,omitempty"`       // 資源の上限を超えて監視を間引いている端末
+	Lagging        []Device        `json:"lagging,omitempty"`         // 指示を適用しないままになっている端末
 }
 
 // RulesPush は署名付きの検知ルールの配布（M3）。

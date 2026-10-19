@@ -86,6 +86,7 @@ type state struct {
 	Commanded policy.IsolationLevel `json:"commanded,omitempty"` // 指示された隔離（自己隔離を使えない端末でも記録する。証拠を集めるきっかけの判断に使う）
 	Evidence  uint64                `json:"evidence,omitempty"`  // 応えた証拠の要求の番号
 	Apps      *policy.AppControl    `json:"apps,omitempty"`      // 指示されたプロセス単位の通信の制御（C7）
+	Gateway   *api.GatewayInfo      `json:"gateway,omitempty"`   // GW の LAN 側のアドレスと MAC アドレス（2m-1）
 }
 
 // Local は同じプロセスで動く執行部。
@@ -115,6 +116,9 @@ type Local struct {
 
 	resMu sync.Mutex // 資源の使用量の記録を守る
 	res   resourceMonitor
+
+	gwMu sync.Mutex // ARP の表の確認の状態を守る
+	gw   gatewayGuard
 }
 
 var _ Executor = (*Local)(nil)
@@ -269,6 +273,11 @@ func (l *Local) Apply(ctx context.Context, env sign.Envelope) error {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	// GW の情報は、版数が適用済み以上の指示から受け取る（版数を上げずに知らせ始めた端末にも届くように）。
+	if cmd.Version >= l.state.Version && !sameGateway(cmd.Gateway, l.state.Gateway) {
+		l.state.Gateway = cmd.Gateway
+		l.save()
+	}
 	if cmd.Version <= l.state.Version {
 		return nil
 	}
@@ -281,7 +290,8 @@ func (l *Local) Apply(ctx context.Context, env sign.Envelope) error {
 	case cmd.Evidence > prev.Evidence:
 		collect = api.EvidenceReasonRequest
 	}
-	next := state{Version: cmd.Version, Isolation: cmd.Isolation, Updates: cmd.Updates, Commanded: cmd.Isolation, Evidence: max(prev.Evidence, cmd.Evidence), Apps: cmd.Apps}
+	next := state{Version: cmd.Version, Isolation: cmd.Isolation, Updates: cmd.Updates, Commanded: cmd.Isolation, Evidence: max(prev.Evidence, cmd.Evidence), Apps: cmd.Apps,
+		Gateway: cmd.Gateway}
 	// プロセス単位の通信の制御（C7）は、隔離より先に適用する。失敗したら何も変えずにエラーを返し、次の応答で試し直す。
 	appsChanged := !sameApps(prev.Apps, cmd.Apps)
 	if appsChanged {
@@ -296,7 +306,7 @@ func (l *Local) Apply(ctx context.Context, env sign.Envelope) error {
 	}
 	if !l.cfg.Platform.Capabilities().Has(platform.CapIsolation) {
 		// 自己隔離を使えない端末は、GW の遮断だけで隔離される。指示の版数だけを記録する。
-		l.state = state{Version: cmd.Version, Commanded: next.Commanded, Evidence: next.Evidence, Apps: next.Apps}
+		l.state = state{Version: cmd.Version, Commanded: next.Commanded, Evidence: next.Evidence, Apps: next.Apps, Gateway: next.Gateway}
 		l.save()
 		if cmd.Isolation != "" && prev.Commanded == "" {
 			l.log.Warn("この端末では自己隔離を使えません。GW の遮断で隔離されます", "段階", cmd.Isolation)
@@ -421,6 +431,7 @@ func (l *Local) Watch(ctx context.Context, out chan<- event.Event) error {
 			if errc != nil {
 				<-errc
 			}
+			l.unpinGateway()
 			return ctx.Err()
 		case err := <-errc:
 			errc = nil
@@ -429,6 +440,7 @@ func (l *Local) Watch(ctx context.Context, out chan<- event.Event) error {
 			}
 		case <-t.C:
 			send(l.checkTamper(ctx))
+			send(l.checkGateway())
 		case <-measure:
 			send(l.checkResources())
 		}

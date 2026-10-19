@@ -156,9 +156,12 @@ func (c *Controller) heartbeat(w http.ResponseWriter, r *http.Request, id pki.Id
 	}
 	c.touchLocked(d, addr)
 	cmd, err := c.commandLocked(d)
+	lag := c.checkLagLocked(d, hb.Applied, now)
 	c.mu.Unlock()
-	if skew != nil {
-		c.observe(skew, subject{device: id.ID})
+	for _, f := range []*event.Event{skew, lag} {
+		if f != nil {
+			c.observe(f, subject{device: id.ID})
+		}
 	}
 	respond(w, cmd, err)
 }
@@ -193,6 +196,9 @@ func (c *Controller) postEvents(w http.ResponseWriter, r *http.Request, id pki.I
 		}
 		// 検知ルールで評価し、危険度がしきい値を超えたら隔離する（既定のルールでは、おとりへの接触と大量の変更）。
 		c.observe(e, subject{device: id.ID})
+		if e.FindingInfo.HasType(event.FindingTypeARPPoisoning) {
+			c.reportARPPoisoning(id.ID, e)
+		}
 	}
 
 	c.mu.Lock()
