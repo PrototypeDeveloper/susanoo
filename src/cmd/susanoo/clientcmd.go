@@ -163,6 +163,32 @@ func fileSettings(f *fileConfig) linux.FileConfig {
 	return cfg
 }
 
+// check は、設定の中身だけで分かる誤り（ファイルを使わずに確かめられるもの）を返す。CLIENT の起動のときと、
+// Web コンソールで保存する前に使う。
+func (cfg *clientConfig) check() error {
+	if _, err := netip.ParseAddrPort(cfg.Controller); err != nil {
+		return fmt.Errorf("controller %q はアドレスとポート（例: 192.168.10.1:8443）で書いてください", cfg.Controller)
+	}
+	if cfg.PKIDir == "" || cfg.StateDir == "" {
+		return errors.New("pki_dir と state_dir は必須です")
+	}
+	if _, _, err := resourceLimits(cfg.Resources); err != nil {
+		return err
+	}
+	if _, err := logonSettings(cfg.Logons); err != nil {
+		return err
+	}
+	for _, h := range cfg.Honeytokens {
+		if !filepath.IsAbs(h.Path) {
+			return fmt.Errorf("honeytokens の %q は絶対パスで書いてください", h.Path)
+		}
+		if _, err := honeytoken.Generate(h.Kind); err != nil {
+			return fmt.Errorf("honeytokens の %s: %w", h.Path, err)
+		}
+	}
+	return nil
+}
+
 func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 	flags := flag.NewFlagSet("client", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -174,12 +200,12 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 	if err := config.Load(*path, &cfg); err != nil {
 		return fail(stderr, err)
 	}
+	if err := cfg.check(); err != nil {
+		return fail(stderr, err)
+	}
 	pkiDir := config.Resolve(*path, cfg.PKIDir)
 	stateDir := config.Resolve(*path, cfg.StateDir)
-	addr, err := netip.ParseAddrPort(cfg.Controller)
-	if err != nil {
-		return fail(stderr, fmt.Errorf("controller %q はアドレスとポート（例: 192.168.10.1:8443）で書いてください", cfg.Controller))
-	}
+	addr, _ := netip.ParseAddrPort(cfg.Controller) // check で確かめてある
 	ca, err := loadCA(pkiDir)
 	if err != nil {
 		return fail(stderr, err)
@@ -214,10 +240,7 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
-	cpuLimit, memLimit, err := resourceLimits(cfg.Resources)
-	if err != nil {
-		return fail(stderr, err)
-	}
+	cpuLimit, memLimit, _ := resourceLimits(cfg.Resources) // check で確かめてある
 	debug.SetMemoryLimit(goMemoryLimit(memLimit))
 	pcfg := linux.Config{
 		Logons:        logons,

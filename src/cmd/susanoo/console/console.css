@@ -1,0 +1,35 @@
+:root { --fg: #1d2330; --muted: #5b6475; --line: #d7dce5; --accent: #2f6fd0; --bg: #f6f8fb; --err: #b3261e; --warn: #8a5a00; --add: #e6f4ea; --del: #fce8e6; }
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, "Noto Sans JP", sans-serif; color: var(--fg); background: var(--bg); line-height: 1.6; }
+header { background: #fff; border-bottom: 1px solid var(--line); padding: 12px 20px; }
+h1 { font-size: 1.3rem; margin: 0; }
+header p { margin: 2px 0; color: var(--muted); font-size: 0.9rem; }
+main { max-width: 960px; margin: 0 auto; padding: 16px 20px 48px; }
+.tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.tabs button { border: 1px solid var(--line); background: #fff; padding: 6px 16px; border-radius: 6px 6px 0 0; cursor: pointer; }
+.tabs button[aria-selected="true"] { border-color: var(--accent); color: var(--accent); font-weight: bold; }
+fieldset { background: #fff; border: 1px solid var(--line); border-radius: 8px; margin: 0 0 12px; padding: 8px 16px 12px; }
+legend { font-weight: bold; padding: 0 4px; }
+.field { display: grid; grid-template-columns: 16em 1fr; gap: 4px 12px; align-items: start; padding: 6px 0; border-top: 1px dashed var(--line); }
+.field:first-of-type { border-top: none; }
+.field label { padding-top: 4px; }
+.field input, .field select { width: 100%; padding: 4px 6px; font: inherit; border: 1px solid var(--line); border-radius: 4px; }
+.field .help { grid-column: 2; color: var(--muted); font-size: 0.85rem; }
+.field .bad { border-color: var(--err); }
+textarea { width: 100%; min-height: 28em; font-family: ui-monospace, monospace; font-size: 0.9rem; padding: 8px; border: 1px solid var(--line); border-radius: 6px; }
+.actions { display: flex; gap: 8px; margin: 12px 0 4px; flex-wrap: wrap; }
+.actions button { padding: 6px 18px; font: inherit; border-radius: 6px; border: 1px solid var(--accent); background: #fff; color: var(--accent); cursor: pointer; }
+.actions button#save:not(:disabled) { background: var(--accent); color: #fff; }
+.actions button:disabled { opacity: 0.4; cursor: default; }
+.note, .status { color: var(--muted); font-size: 0.9rem; }
+.status.bad { color: var(--err); }
+#result ul { margin: 4px 0; padding-left: 1.4em; }
+#result .error { color: var(--err); }
+#result .warn { color: var(--warn); }
+#result .ok { color: #1e7a3a; font-weight: bold; }
+pre.diff { background: #fff; border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow-x: auto; font-size: 0.85rem; }
+pre.diff span { display: block; white-space: pre; }
+pre.diff .add { background: var(--add); }
+pre.diff .del { background: var(--del); }
+pre.diff .gap { color: var(--muted); }
+@media (max-width: 640px) { .field { grid-template-columns: 1fr; } .field .help { grid-column: 1; } }

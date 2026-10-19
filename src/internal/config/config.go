@@ -18,13 +18,21 @@ func Load(path string, v any) error {
 	if err != nil {
 		return err
 	}
+	if err := Parse(data, v); err != nil {
+		return fmt.Errorf("config: %s を解析できません: %w", path, err)
+	}
+	return nil
+}
+
+// Parse は JSON の data を v に読む（Load と同じく、知らない項目と後ろの余分なデータを拒否する）。
+func Parse(data []byte, v any) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(v); err != nil {
-		return fmt.Errorf("config: %s を解析できません: %w", path, err)
+		return err
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return fmt.Errorf("config: %s の JSON の後に余分なデータがあります", path)
+		return errors.New("JSON の後に余分なデータがあります")
 	}
 	return nil
 }

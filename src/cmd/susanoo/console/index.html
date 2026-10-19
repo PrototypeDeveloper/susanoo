@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>susanoo の設定</title>
+<link rel="stylesheet" href="/console.css">
+<script src="/console.js" defer></script>
+</head>
+<body>
+<header>
+  <h1 id="title">susanoo の設定</h1>
+  <p id="file"></p>
+  <p id="service"></p>
+</header>
+<main>
+  <div class="tabs" role="tablist">
+    <button type="button" id="tab-form" role="tab" aria-selected="true">かんたん設定</button>
+    <button type="button" id="tab-json" role="tab" aria-selected="false">JSON</button>
+  </div>
+  <section id="pane-form" role="tabpanel">
+    <p class="note">入力欄を空にすると、その項目を設定ファイルから消して既定値を使います。入力欄にない項目（通知、おとり、監視する場所の細かい指定など）は JSON の欄で編集します。</p>
+    <form id="form" autocomplete="off"></form>
+  </section>
+  <section id="pane-json" role="tabpanel" hidden>
+    <textarea id="json" spellcheck="false" aria-label="設定の JSON"></textarea>
+    <p id="json-status" class="status"></p>
+  </section>
+  <div class="actions">
+    <button type="button" id="check">確かめる</button>
+    <button type="button" id="save" disabled>保存する</button>
+    <button type="button" id="restart" disabled>起動し直す</button>
+    <button type="button" id="reload">読み込み直す</button>
+  </div>
+  <p class="note">保存の前に「確かめる」で、起動のときと同じ検証を通し、変更点を確かめます。保存すると前の設定を控えとして残します。設定は、サービスを起動し直すと使われます。</p>
+  <section id="result" aria-live="polite"></section>
+</main>
+</body>
+</html>

@@ -220,6 +220,72 @@ type dhcpConfig struct {
 	DNS       []string        `json:"dns"`        // 端末に知らせる DNS サーバー
 }
 
+// check は、設定の中身だけで分かる誤り（ファイルや装置を使わずに確かめられるもの）を返す。GW の起動のときと、
+// Web コンソールで保存する前に使う。
+func (cfg *gwConfig) check() error {
+	if _, err := netip.ParseAddrPort(cfg.Listen); err != nil {
+		return fmt.Errorf("listen %q はアドレスとポート（例: 192.168.10.1:8443）で書いてください", cfg.Listen)
+	}
+	if cfg.PKIDir == "" || cfg.StateDir == "" || cfg.Policy == "" {
+		return errors.New("pki_dir、state_dir、policy は必須です")
+	}
+	if cfg.Router != nil && cfg.Bridge != nil {
+		return errors.New("router と bridge は一緒に使えません（どちらかの方式にしてください）")
+	}
+	if r := cfg.Router; r != nil && (r.LAN == "" || r.WAN == "") {
+		return errors.New("router には lan と wan が必要です")
+	}
+	if b := cfg.Bridge; b != nil {
+		if b.Name == "" || b.LAN == "" || b.WAN == "" {
+			return errors.New("bridge には name、lan、wan が必要です")
+		}
+		if cfg.DHCP != nil {
+			return errors.New("ブリッジ方式では dhcp を使えません（上流のルーターの DHCP を使います）")
+		}
+	}
+	if side := cfg.lanSide(); side != nil {
+		if _, err := side.trustedRouters(); err != nil {
+			return err
+		}
+		if _, err := side.gateways(); err != nil {
+			return err
+		}
+		if side.ndProbe() < time.Second {
+			return errors.New("nd_probe_interval は 1s 以上にしてください")
+		}
+	}
+	if r := cfg.Router; r != nil {
+		if d := r.RAInterval.Or(defaultRAInterval); d < 4*time.Second || d > 1800*time.Second {
+			return errors.New("router.ra_interval は 4s から 30m にしてください")
+		}
+	}
+	if d := cfg.DHCP; d != nil {
+		if cfg.Router == nil {
+			return errors.New("dhcp を使うには router の設定が必要です")
+		}
+		if _, _, err := dhcp.ParseRange(d.Range); err != nil {
+			return fmt.Errorf("dhcp.range: %w", err)
+		}
+		for _, s := range d.DNS {
+			if a, err := netip.ParseAddr(s); err != nil || !a.Is4() {
+				return fmt.Errorf("dhcp.dns の %q は IPv4 アドレスで書いてください", s)
+			}
+		}
+	}
+	if cfg.DNS != nil && cfg.lanSide() == nil {
+		return errors.New("dns を使うには router か bridge の設定が必要です")
+	}
+	if _, err := parseUpstreams(cfg.DNS); err != nil {
+		return err
+	}
+	if cfg.Notify != nil {
+		if err := cfg.Notify.Validate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // configCheckInterval は設定ファイルの変更を確かめる間隔（G12）。
 const configCheckInterval = 30 * time.Second
 
@@ -244,55 +310,14 @@ func runGW(ctx context.Context, args []string, stderr io.Writer) int {
 	if err := config.Load(*path, &cfg); err != nil {
 		return fail(stderr, err)
 	}
+	if err := cfg.check(); err != nil {
+		return fail(stderr, err)
+	}
 	pkiDir := config.Resolve(*path, cfg.PKIDir)
 	stateDir := config.Resolve(*path, cfg.StateDir)
 	policyPath := config.Resolve(*path, cfg.Policy)
-	listen, err := netip.ParseAddrPort(cfg.Listen)
-	if err != nil {
-		return fail(stderr, fmt.Errorf("listen %q はアドレスとポート（例: 192.168.10.1:8443）で書いてください", cfg.Listen))
-	}
-	if cfg.Router != nil && cfg.Bridge != nil {
-		return fail(stderr, errors.New("router と bridge は一緒に使えません（どちらかの方式にしてください）"))
-	}
-	if b := cfg.Bridge; b != nil {
-		if b.Name == "" || b.LAN == "" || b.WAN == "" {
-			return fail(stderr, errors.New("bridge には name、lan、wan が必要です"))
-		}
-		if cfg.DHCP != nil {
-			return fail(stderr, errors.New("ブリッジ方式では dhcp を使えません（上流のルーターの DHCP を使います）"))
-		}
-	}
-	if side := cfg.lanSide(); side != nil {
-		if _, err := side.trustedRouters(); err != nil {
-			return fail(stderr, err)
-		}
-		if _, err := side.gateways(); err != nil {
-			return fail(stderr, err)
-		}
-		if side.ndProbe() < time.Second {
-			return fail(stderr, errors.New("nd_probe_interval は 1s 以上にしてください"))
-		}
-	}
-	if r := cfg.Router; r != nil {
-		if d := r.RAInterval.Or(defaultRAInterval); d < 4*time.Second || d > 1800*time.Second {
-			return fail(stderr, errors.New("router.ra_interval は 4s から 30m にしてください"))
-		}
-	}
-	if cfg.DHCP != nil && cfg.Router == nil {
-		return fail(stderr, errors.New("dhcp を使うには router の設定が必要です"))
-	}
-	if cfg.DNS != nil && cfg.lanSide() == nil {
-		return fail(stderr, errors.New("dns を使うには router か bridge の設定が必要です"))
-	}
-	upstreams, err := parseUpstreams(cfg.DNS)
-	if err != nil {
-		return fail(stderr, err)
-	}
-	if cfg.Notify != nil {
-		if err := cfg.Notify.Validate(); err != nil {
-			return fail(stderr, err)
-		}
-	}
+	listen, _ := netip.ParseAddrPort(cfg.Listen) // check で確かめてある
+	upstreams, _ := parseUpstreams(cfg.DNS)      // check で確かめてある
 
 	policyData, err := os.ReadFile(policyPath)
 	if err != nil {

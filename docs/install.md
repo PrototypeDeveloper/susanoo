@@ -141,6 +141,7 @@ systemctl enable --now susanoo-client
 
 ## 4. 運用
 
+- 設定の変更：`susanoo console -config /etc/susanoo/gw.json`（端末なら `client.json`）を root で実行し、表示された URL をその機器のブラウザーで開く（別の機器からは `ssh -L 8484:127.0.0.1:8484 <機器>` で転送して開く）。入力欄か JSON の欄で編集し、「確かめる」で検証と変更点を見てから保存し、「起動し直す」で使い始める。前の設定は `.bak` の控えに残る
 - 状態：`ctl status`（全体）、`ctl devices`、`ctl hosts`、`ctl events`、`ctl incident`。通知の宛先を設定していれば、隔離などをすぐに知らせる
 - 誤検知：`ctl trial -since 14d` で、保存したイベントを今の検知ルールと例外で評価し直し、端末ごとに隔離していた回数と当たったルールを確かめる。平常の操作は検知ルールの例外にして配布し、もう一度 `ctl trial` で確かめてから、対応の方式を `enforce` にし、試験運用（monitor）のルールを加点にする（[policy.md](policy.md) の「試行の評価」）
 - CLIENT の更新：新しい版を `make dist` で作り、`ctl upgrade sign` で署名して（二段構えならルートのディレクトリで）、`ctl upgrade push -canary <端末>` で先行適用し、問題がなければ `ctl upgrade promote` で全体に広げる。端末は版数とハッシュを確かめて入れ替え、起動し直す

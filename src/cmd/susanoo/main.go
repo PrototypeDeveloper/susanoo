@@ -30,6 +30,7 @@ const usage = `使い方: susanoo <モード> [オプション]
   ctl release  端末の隔離を解除する
   ctl policy   ポリシーを署名して配布する（「susanoo ctl」でほかの操作も表示する）
   backup       GW の設定、ポリシー、鍵、状態をバックアップする、確かめる、戻す（「susanoo backup」で説明を表示する）
+  console      GW か CLIENT の設定を、ブラウザーの日本語の画面で編集する（この機器の中からだけ使える）
   sbom         この実行ファイルの SBOM（SPDX 2.3 の JSON）を書き出す（例: susanoo sbom -o susanoo.spdx.json）
   version      版数を表示する
   help         この説明を表示する
@@ -64,6 +65,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	case "sbom":
 		return runSBOM(args[1:], stdout, stderr)
+	case "console":
+		return runConsole(ctx, args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return exitOK
