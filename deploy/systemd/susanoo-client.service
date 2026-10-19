@@ -1,0 +1,33 @@
+# susanoo の CLIENT（端末の監視、おとり、自己隔離）。導入の手順は docs/install.md。
+# CLIENT は root で起動し、自分で特権の執行部と非特権の解析部に分かれる。新しい版への入れ替え（ctl upgrade）と、
+# 認証局の証明書の更新のあとは、終了コード 75 で終わって起動し直す。止めても自己隔離は解除しない。
+[Unit]
+Description=susanoo CLIENT
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/susanoo client -config /etc/susanoo/client.json
+Restart=always
+RestartSec=2s
+KillMode=mixed
+TimeoutStopSec=20s
+
+# 資源の上限。CLIENT は設定の resources（既定は CPU 10%、メモリ 256 MiB）を超えると監視を間引いて使用量を下げる。
+# ここは確実に抑えるための上限で、設定の上限より大きくする。
+CPUQuota=25%
+MemoryHigh=384M
+MemoryMax=512M
+
+# 守り。CLIENT は端末全体を監視し、利用者のホームにおとりを置き、実行ファイルを入れ替えるので、ファイルシステムは
+# 読み取り専用にしない。
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -38,7 +38,7 @@ FUZZ_TARGETS := \
 	./internal/privsep:FuzzParseFrame
 FUZZTIME ?= 10s
 
-.PHONY: all build test vet fmt check fuzz lab-test clean
+.PHONY: all build test vet fmt check fuzz lab-test dist clean
 
 all: check build
 
@@ -66,6 +66,20 @@ fuzz:
 		$(GO) -C src test -run '^$$' -fuzz "^$$fn$$" -fuzztime $(FUZZTIME) $$pkg || exit 1; \
 	done
 
+# 配布するファイル（2n）。CPU ごとの実行ファイル、それぞれの SBOM（SPDX 2.3）、SHA-256 の一覧を bin/dist に作る。
+# 実行ファイルのファイル名は ctl upgrade sign の -bin に合わせる。同じソースからは同じ実行ファイルになる（再現可能なビルド）。
+DIST       := $(BIN)/dist
+DIST_ARCHS := amd64 arm64
+dist: build
+	rm -rf $(DIST)
+	mkdir -p $(DIST)
+	for a in $(DIST_ARCHS); do \
+		CGO_ENABLED=0 GOOS=linux GOARCH=$$a $(GO) -C src build -trimpath -ldflags '$(LDFLAGS)' -o $(DIST)/susanoo-linux-$$a ./cmd/susanoo || exit 1; \
+		$(BIN)/susanoo sbom -bin $(DIST)/susanoo-linux-$$a -version $(VERSION) -o $(DIST)/susanoo-linux-$$a.spdx.json >/dev/null || exit 1; \
+	done
+	cd $(DIST) && sha256sum susanoo-linux-* > SHA256SUMS
+	@cat $(DIST)/SHA256SUMS
+
 # 検証環境の試験（root 権限が必要）。ビルドは一般ユーザーで行い、sudo は試験の実行だけに使う。
 # 試験は使い捨てのネットワーク名前空間とマウント名前空間の中で動き、ホストのネットワークには触れない。
 LAB_NS := sudo unshare --net --mount --propagation private
@@ -84,3 +98,4 @@ lab-test: build
 
 clean:
 	rm -f $(BIN)/susanoo $(BIN)/susanoo-next $(BIN)/*.test
+	rm -rf $(DIST)

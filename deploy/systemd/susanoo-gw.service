@@ -1,0 +1,36 @@
+# susanoo の GW（すべての通信が通る関所。CONTROLLER を同居させる）。導入の手順は docs/install.md。
+# GW は root で起動し、ソケットと nftables のルールを用意してから、自分で権限を分ける（CONTROLLER と LAN 側の処理は
+# 別々の利用者で動く。利用者は sysusers の susanoo.conf で作る）。止めている間の通信の扱いは、ポリシーの on_failure
+# （fail_open なら通す、fail_closed なら外部通信の制御を残す）に従う。端末の隔離はどちらでも残る。
+[Unit]
+Description=susanoo GW
+Wants=network-online.target
+After=network-online.target nftables.service
+# 起動してすぐ何度も終わるとき（設定の誤りなど）は、起動し直すのをやめる（journalctl -u susanoo-gw で理由を見る）。
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/susanoo gw -config /etc/susanoo/gw.json
+Restart=always
+RestartSec=2s
+# 止めるときは本体だけに知らせ、本体が非特権のプロセスを順に止める（状態とイベントの索引を書き終えるため）。
+KillMode=mixed
+TimeoutStopSec=20s
+LimitNOFILE=65536
+
+# 守り。GW の動き（nftables、sysctl、ソケット、証明書の更新）を妨げない範囲に限る。/etc/susanoo は証明書を更新して
+# 書き換え、/var/lib/susanoo には台帳、監査ログ、イベントを書く。
+NoNewPrivileges=yes
+ProtectSystem=full
+ReadWritePaths=-/etc/susanoo -/var/lib/susanoo
+ProtectHome=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

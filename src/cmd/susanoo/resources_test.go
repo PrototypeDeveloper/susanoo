@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -45,5 +48,33 @@ func TestPrintDeviceStates(t *testing.T) {
 	}
 	if got := resourceUsage(&api.ResourceUsage{CPUPercent: 3.25, MemoryBytes: 41 << 20, Dropped: 7}); got != "CPU 3.2%、メモリ 41 MiB、間引いたイベント 7" {
 		t.Errorf("resourceUsage = %q", got)
+	}
+}
+
+// susanoo sbom は、この実行ファイル（試験では試験の実行ファイル）の SBOM を SPDX 2.3 の JSON で書き出す。
+func TestSBOMCommand(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "susanoo.spdx.json")
+	if code, stdout, stderr := runCmd(t, "sbom", "-o", out); code != exitOK || !strings.Contains(stdout, out) {
+		t.Fatalf("susanoo sbom: %s %s", stdout, stderr)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		SPDXVersion string `json:"spdxVersion"`
+		Packages    []struct {
+			Name      string `json:"name"`
+			Checksums []struct {
+				ChecksumValue string `json:"checksumValue"`
+			} `json:"checksums"`
+		} `json:"packages"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil || doc.SPDXVersion != "SPDX-2.3" || len(doc.Packages) < 2 ||
+		doc.Packages[0].Name != "susanoo" || doc.Packages[1].Name != "stdlib" || len(doc.Packages[0].Checksums) != 1 {
+		t.Errorf("SBOM = %s（%v）", data, err)
+	}
+	if code, stdout, _ := runCmd(t, "sbom"); code != exitOK || !strings.Contains(stdout, `"spdxVersion": "SPDX-2.3"`) {
+		t.Errorf("画面への表示 = %.200s", stdout)
 	}
 }
