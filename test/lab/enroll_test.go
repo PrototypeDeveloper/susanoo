@@ -121,7 +121,7 @@ func TestEnroll(t *testing.T) {
 	writeJSON(t, filepath.Join(l.dir, pc.id+".json"), map[string]any{
 		"controller": controllerAddr, "pki_dir": pc.id, "state_dir": pc.id + "-state", "heartbeat_interval": "1s",
 		"files":          map[string]any{"watch": []string{}, "persistence": []string{}, "privilege": []string{}, "sensitive": []map[string]any{}, "protect": []string{}},
-		"kernel_modules": false,
+		"kernel_modules": false, "logons": map[string]any{"enabled": false},
 	})
 	start(t, "CLIENT "+pc.id, pc.ns, nil, *susanooBin, "client", "-config", filepath.Join(l.dir, pc.id+".json"))
 	waitFor(t, "登録した端末の接続", 15*time.Second, func() bool { return !l.devices()[pc.id].LastSeen.IsZero() })

@@ -25,6 +25,7 @@ FUZZ_TARGETS := \
 	./internal/platform/linux:FuzzParseInotify \
 	./internal/platform/linux:FuzzParseFIDEvents \
 	./internal/platform/linux:FuzzParseNFQueue \
+	./internal/platform/linux:FuzzParseLogons \
 	./internal/dhcp:FuzzParse \
 	./internal/gw:FuzzParseARP \
 	./internal/dns:FuzzParse \

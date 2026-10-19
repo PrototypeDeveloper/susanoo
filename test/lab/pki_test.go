@@ -83,7 +83,7 @@ func TestTwoTierPKI(t *testing.T) {
 	writeJSON(t, filepath.Join(l.dir, pc.id+".json"), map[string]any{
 		"controller": controllerAddr, "pki_dir": pc.id, "state_dir": pc.id + "-state", "heartbeat_interval": "1s",
 		"files":          map[string]any{"watch": []string{}, "persistence": []string{}, "privilege": []string{}, "sensitive": []map[string]any{}, "protect": []string{}},
-		"kernel_modules": false,
+		"kernel_modules": false, "logons": map[string]any{"enabled": false},
 	})
 
 	t.Log("段階2: 権限を分けた GW が二段構えの鍵で起動し、ルートの発行した管理者の証明書で操作できる。端末は連なりを示して登録する")

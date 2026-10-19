@@ -64,6 +64,15 @@ var Defaults = []Rule{
 		Threshold:   &Threshold{Count: 30, Window: config.Duration(time.Minute)},
 		Match: all(Cond{Field: "connection_info.direction_id", Op: "eq", Value: float64(2)},
 			*anyOf(cidr("dst_endpoint.ip", "10.0.0.0/8"), cidr("dst_endpoint.ip", "172.16.0.0/12"), cidr("dst_endpoint.ip", "192.168.0.0/16")))},
+	// ログオン（C4、2h）。管理者が遠隔で作業する環境では当てはまるため、試験運用から始める。
+	{ID: "logon-failures", Name: "ログオンの失敗の連続", Class: "logon", Mode: ModeMonitor, Score: 40,
+		Description: "端末へのログオンの失敗が、短い間に続いた（パスワードの総当たりや、盗んだ認証情報の試しの疑い）",
+		Threshold:   &Threshold{Count: 10, Window: config.Duration(5 * time.Minute)},
+		Match:       all(Cond{Field: "status_id", Op: "eq", Value: float64(event.StatusFailure)})},
+	{ID: "remote-root-logon", Name: "root での遠隔ログオン", Class: "logon", Mode: ModeMonitor, Score: 30,
+		Description: "root で遠隔からログオンした（root の遠隔ログオンを禁じていない端末で、管理者の作業でなければ乗っ取りの疑い）",
+		Match: all(Cond{Field: "activity_id", Op: "eq", Value: float64(event.AuthLogon)}, Cond{Field: "status_id", Op: "eq", Value: float64(event.StatusSuccess)},
+			Cond{Field: "is_remote", Op: "eq", Value: "true"}, Cond{Field: "user.name", Op: "eq", Value: "root"})},
 	// AI エージェントの監視（C9、T10）。CLIENT が付けた帰属（unmapped.agent）と操作の組み合わせで検知する。
 	{ID: "agent-privilege", Name: "AI エージェントによる権限の操作", Class: "process", Mode: ModeMonitor, Score: 40, Severity: event.SeverityHigh,
 		Description: "AI エージェントの配下のプロセスが、sudo などで権限を得ようとした（プロンプトインジェクションで操られた疑い）",

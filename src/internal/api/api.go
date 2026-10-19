@@ -559,6 +559,7 @@ var EventClasses = map[string]event.ClassUID{
 	"network": event.ClassNetworkActivity,
 	"dns":     event.ClassDNSActivity,
 	"dhcp":    event.ClassDHCPActivity,
+	"logon":   event.ClassAuthentication,
 }
 
 // Severities は、イベントの検索で使う重大度の名前。
@@ -649,7 +650,7 @@ func (q EventQuery) ClassUID() (event.ClassUID, error) {
 	if n, err := strconv.Atoi(q.Class); err == nil && n > 0 {
 		return event.ClassUID(n), nil
 	}
-	return 0, fmt.Errorf("イベントの種類 %q は file、process、finding、network、dns、dhcp かクラスの番号で書いてください", q.Class)
+	return 0, fmt.Errorf("イベントの種類 %q は file、process、finding、network、dns、dhcp、logon かクラスの番号で書いてください", q.Class)
 }
 
 // MinSeverity は検索する重大度の下限を返す。条件がなければ 0。

@@ -629,7 +629,7 @@ func (c *Controller) timeline(devices []string, incID string, since, until time.
 			}
 		}
 		kind := map[event.ClassUID]string{event.ClassFileSystemActivity: "file", event.ClassProcessActivity: "process",
-			event.ClassNetworkActivity: "network", event.ClassDNSActivity: "dns", event.ClassDHCPActivity: "dhcp"}[e.ClassUID]
+			event.ClassNetworkActivity: "network", event.ClassDNSActivity: "dns", event.ClassDHCPActivity: "dhcp", event.ClassAuthentication: "logon"}[e.ClassUID]
 		summary := describe(&e)
 		if f := e.FindingInfo; f != nil {
 			kind = "finding"

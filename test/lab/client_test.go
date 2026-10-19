@@ -154,7 +154,7 @@ func fileHas(path, sep string, parts ...string) bool {
 // TestClient は CLIENT の権限の分離と自己防御（C10）、監視（C1、C2、C3）、永続化の場所の変更と認証情報の読み取りの検知（C4、C8）、
 // AI エージェントの帰属（C9）、既定の条件のルールによる検知（C8 の連続する列挙、C9 のエージェントの操作）、大量の変更による隔離、
 // 隔離の通知（M7。Slack の形の webhook とメールを、疑似インターネットの偽の受け口で受ける）、証拠の保全（C11）、
-// インシデント対応の支援（M9）、設定のバックアップと復元（M11）、おとりの削除の検知（C5）、証明書の更新（M1）を確かめる。
+// インシデント対応の支援（M9）、設定のバックアップと復元（M11）、おとりの削除の検知（C5）、ログオンの記録（C4）、証明書の更新（M1）を確かめる。
 func TestClient(t *testing.T) {
 	if *susanooBin == "" {
 		t.Fatal("-susanoo で susanoo の実行ファイルを指定してください")
@@ -190,6 +190,11 @@ func TestClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	decoy := filepath.Join(l.dir, "decoy", ".aws", "credentials")
+	// ログオンの記録は、systemd-logind のセッションのディレクトリと認証のログの代わりに、試験のディレクトリとファイルを読ませる。
+	sessions := filepath.Join(l.dir, "sessions")
+	if err := os.MkdirAll(sessions, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	keyDir := filepath.Join(l.dir, pc.id)
 	l.susanoo("client", "keygen", "-dir", keyDir)
 	// 証明書の更新を確かめるため、有効期間の短い証明書を発行する（残りが 3 分の 1 を切ったら CLIENT が更新する）。
@@ -203,6 +208,7 @@ func TestClient(t *testing.T) {
 		},
 		"honeytokens": []map[string]any{{"path": decoy, "kind": "aws"}},
 		"evidence":    map[string]any{"logs": []string{authLog}},
+		"logons":      map[string]any{"sessions_dir": sessions, "auth_logs": []string{authLog}, "journal": false},
 	})
 
 	self, err := os.Executable()
@@ -219,7 +225,7 @@ func TestClient(t *testing.T) {
 	waitFor(t, "端末の登録と機能の申告", 15*time.Second, func() bool {
 		f := l.devices()[pc.id].Features
 		return slices.Contains(f, "process_events") && slices.Contains(f, "network_events") && slices.Contains(f, "file_events") &&
-			slices.Contains(f, "kernel_modules") && slices.Contains(f, "isolation") && slices.Contains(f, "evidence")
+			slices.Contains(f, "kernel_modules") && slices.Contains(f, "isolation") && slices.Contains(f, "evidence") && slices.Contains(f, "logons")
 	})
 
 	t.Log("段階1: CLIENT は権限を分けて動く。執行部は必要な capability だけを持ち、解析部は非特権の利用者で capability を持たない")
@@ -500,7 +506,48 @@ func TestClient(t *testing.T) {
 		return eventLine(l.events(), `"operation":"delete"`, `"name":"lab.test"`)
 	})
 
-	t.Log("段階17: 有効期間の短い証明書は、CLIENT が CONTROLLER に頼んで更新し、新しい証明書で通信を続ける")
+	t.Log("段階17: ログオンとログオフ、失敗したログオンが記録され、既定のルール（ログオンの失敗の連続、root での遠隔ログオン）で評価される")
+	// systemd-logind と同じく、書きかけの名前で書いてから名前を変える。
+	session := "USER=root\nUID=0\nSTATE=active\nCLASS=user\nREMOTE=1\nREMOTE_HOST=192.0.2.60\nSERVICE=sshd\nTTY=pts/7\nLEADER=1\n"
+	if err := os.WriteFile(filepath.Join(sessions, ".#lab1"), []byte(session), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(sessions, ".#lab1"), filepath.Join(sessions, "lab1")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "ログオンの記録", 10*time.Second, func() bool {
+		return eventLine(l.events(), `"class_uid":3002`, `"activity_id":1`, `"name":"root"`, `"ip":"192.0.2.60"`, `"terminal":"pts/7"`)
+	})
+	if err := os.Remove(filepath.Join(sessions, "lab1")); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "ログオフの記録", 10*time.Second, func() bool {
+		return eventLine(l.events(), `"class_uid":3002`, `"activity_id":2`, `"uid":"lab1"`)
+	})
+	var failed strings.Builder
+	for i := range 10 {
+		fmt.Fprintf(&failed, "Oct 19 10:00:%02d pc-001 sshd[4242]: Invalid user admin%d from 192.0.2.61 port %d\n", i, i, 50000+i)
+	}
+	f, err := os.OpenFile(authLog, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.WriteString(failed.String())
+	f.Close()
+	waitFor(t, "失敗したログオンの記録", 10*time.Second, func() bool {
+		return eventLine(l.events(), `"class_uid":3002`, `"status_id":2`, `"name":"admin9"`, `"ip":"192.0.2.61"`, "存在しない利用者")
+	})
+	waitFor(t, "既定のルールの評価（CONTROLLER）", 10*time.Second, func() bool {
+		ev := l.events()
+		return eventLine(ev, `"rule_match"`, `"uid":"logon-failures"`) && eventLine(ev, `"rule_match"`, `"uid":"remote-root-logon"`)
+	})
+	// ctl events -json は 1 行に 1 件の JSON を出す。
+	out, err := inNS(nsGW, *susanooBin, "ctl", "events", "-class", "logon", "-device", pc.id, "-json", "-dir", l.ctrlDir, "-server", controllerAddr).Output()
+	if n := strings.Count(string(out), `"class_uid":3002`); err != nil || n < 12 || n != strings.Count(string(out), "\n") {
+		t.Errorf("ctl events -class logon = %d 件（%v）:\n%.500s", n, err, out)
+	}
+
+	t.Log("段階18: 有効期間の短い証明書は、CLIENT が CONTROLLER に頼んで更新し、新しい証明書で通信を続ける")
 	farFuture := time.Now().Add(80 * 24 * time.Hour)
 	waitFor(t, "証明書の更新", 40*time.Second, func() bool {
 		return l.devices()[pc.id].CertExpiry.After(farFuture)

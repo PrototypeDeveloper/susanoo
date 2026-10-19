@@ -27,6 +27,7 @@ const (
 	CapKernelModules Capability = "kernel_modules" // カーネルモジュールの読み込みの監視（C4）
 	CapEvidence      Capability = "evidence"       // 隔離のときの証拠の保全（C11）
 	CapAppControl    Capability = "app_control"    // プロセス単位の通信の制御（C7）
+	CapLogons        Capability = "logons"         // ログオンとログオフ、失敗したログオンの記録（C4）
 )
 
 // AppFirewall はプロセス単位の通信の制御（C7）ができる Platform。

@@ -409,6 +409,8 @@ func describe(e *event.Event) string {
 		return "ファイル " + cmp.Or(e.File.Path, e.File.Name)
 	case e.ClassUID == event.ClassDHCPActivity && e.DstEndpoint != nil:
 		return "DHCP " + e.DstEndpoint.MAC + " " + e.DstEndpoint.IP
+	case e.ClassUID == event.ClassAuthentication && e.User != nil:
+		return describeLogon(e)
 	}
 	return e.Message
 }
@@ -561,4 +563,25 @@ func (c *Controller) hostViewLocked(h *host) api.Host {
 		v.Risk = c.riskLocked("host:" + h.MAC)
 	}
 	return v
+}
+
+// describeLogon はログオンのイベントを一行で表す（インシデントの時系列などに使う）。
+func describeLogon(e *event.Event) string {
+	var s string
+	switch {
+	case e.ActivityID == event.AuthLogoff:
+		s = "ログオフ "
+	case e.StatusID == event.StatusFailure:
+		s = "ログオンの失敗 "
+	default:
+		s = "ログオン "
+	}
+	s += cmp.Or(e.User.Name, "uid "+e.User.UID)
+	if e.Service != nil {
+		s += "（" + e.Service.Name + "）"
+	}
+	if src := e.SrcEndpoint; src != nil {
+		s += " " + cmp.Or(src.IP, src.Hostname) + " から"
+	}
+	return s
 }

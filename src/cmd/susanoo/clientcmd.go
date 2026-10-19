@@ -40,6 +40,7 @@ type clientConfig struct {
 	ConnectionMonitor *bool             `json:"connection_monitor"`   // 通信とプロセスの結び付け（C2）。既定 true
 	Files             *fileConfig       `json:"files"`                // ファイルの監視（C3、C4、C8、C9）。省略すると既定の場所を監視する
 	KernelModules     *bool             `json:"kernel_modules"`       // カーネルモジュールの読み込みの検知（C4）。既定 true
+	Logons            *logonConfig      `json:"logons"`               // ログオンの記録（C4）。省略すると既定の情報源を使う
 	Agents            []linux.AgentSpec `json:"agents"`               // 見分ける AI エージェント（C9）。省略すると既定の一覧、空（[]）なら見分けない
 	Evidence          *evidenceConfig   `json:"evidence"`             // 証拠の保全（C11）
 	AppControl        *bool             `json:"app_control"`          // プロセス単位の通信の制御（C7。ルールはポリシーのグループの apps）。既定 true
@@ -53,6 +54,30 @@ const defaultAnalyzerUser = "nobody"
 // evidenceConfig は証拠の保全の設定。
 type evidenceConfig struct {
 	Logs []string `json:"logs"` // 末尾を集めるログ（絶対パス）。省略すると既定の場所、空（[]）なら集めない
+}
+
+// logonConfig はログオンの記録の設定。
+type logonConfig struct {
+	Enabled     *bool    `json:"enabled"`      // 既定 true
+	SessionsDir string   `json:"sessions_dir"` // systemd-logind のセッションのディレクトリ。既定 /run/systemd/sessions
+	AuthLogs    []string `json:"auth_logs"`    // 失敗したログオンを読む認証のログ。省略すると既定の場所、空（[]）なら読まない
+	Journal     *bool    `json:"journal"`      // 認証のログのファイルがないとき journalctl でジャーナルを読む。既定 true
+	Journalctl  string   `json:"journalctl"`   // journalctl の場所。既定 /usr/bin/journalctl
+}
+
+// logonSettings は設定ファイルの logons を Platform の設定にする。パスは絶対パスに限る。
+func logonSettings(l *logonConfig) (linux.LogonConfig, error) {
+	if l == nil {
+		return linux.LogonConfig{Enabled: true, Journal: true}, nil
+	}
+	out := linux.LogonConfig{Enabled: l.Enabled == nil || *l.Enabled, SessionsDir: l.SessionsDir, AuthLogs: l.AuthLogs,
+		Journal: l.Journal == nil || *l.Journal, Journalctl: l.Journalctl}
+	for _, p := range append([]string{l.SessionsDir, l.Journalctl}, l.AuthLogs...) {
+		if p != "" && !filepath.IsAbs(p) {
+			return out, fmt.Errorf("logons のパス %q は絶対パスで書いてください", p)
+		}
+	}
+	return out, nil
 }
 
 // fileConfig はファイルの監視の設定。各一覧は、省略すると既定の場所、空（[]）なら監視しない。
@@ -137,7 +162,12 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 	for _, w := range warnings {
 		log.Warn(w.Error())
 	}
+	logons, err := logonSettings(cfg.Logons)
+	if err != nil {
+		return fail(stderr, err)
+	}
 	pcfg := linux.Config{
+		Logons:        logons,
 		Tokens:        tokens,
 		ProcessEvents: cfg.ProcessMonitor == nil || *cfg.ProcessMonitor,
 		NetworkEvents: cfg.ConnectionMonitor == nil || *cfg.ConnectionMonitor,

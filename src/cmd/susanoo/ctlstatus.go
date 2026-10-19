@@ -27,6 +27,7 @@ var classLabels = map[event.ClassUID]string{
 	event.ClassNetworkActivity:    "通信",
 	event.ClassDNSActivity:        "DNS",
 	event.ClassDHCPActivity:       "DHCP",
+	event.ClassAuthentication:     "ログオン",
 }
 
 var severityLabels = map[event.Severity]string{
@@ -155,7 +156,7 @@ func ctlEvents(args []string, stdout, stderr io.Writer) int {
 	c.register(flags)
 	var q api.EventQuery
 	flags.StringVar(&q.Device, "device", "", "端末 ID、アドレス、MAC アドレス、ホスト名")
-	flags.StringVar(&q.Class, "class", "", "種類（file、process、finding、network、dns、dhcp）")
+	flags.StringVar(&q.Class, "class", "", "種類（file、process、finding、network、dns、dhcp、logon）")
 	flags.StringVar(&q.Severity, "severity", "", "この重大度以上（info、low、medium、high、critical）")
 	since := flags.String("since", "", "この時刻以降（「1h」のような今からの長さ、「2026-10-18」、RFC 3339 の時刻）")
 	until := flags.String("until", "", "この時刻以前（書き方は -since と同じ）")

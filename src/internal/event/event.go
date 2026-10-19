@@ -24,6 +24,7 @@ const (
 	ClassFileSystemActivity ClassUID = 1001 // ファイルの操作（C3、C5）
 	ClassProcessActivity    ClassUID = 1007 // プロセスの起動・終了（C1）
 	ClassDetectionFinding   ClassUID = 2004 // 検知結果（おとりへの接触、ハートビートの途絶など）
+	ClassAuthentication     ClassUID = 3002 // ログオンとログオフ、失敗したログオン（C4）
 	ClassNetworkActivity    ClassUID = 4001 // 通信（G5、C2）
 	ClassDNSActivity        ClassUID = 4003 // DNS の問い合わせ（G3）
 	ClassDHCPActivity       ClassUID = 4004 // DHCP によるアドレスの割り当て（G8）
@@ -63,6 +64,19 @@ const (
 	DHCPAssign  = 1
 	DHCPRenew   = 2
 	DHCPRelease = 3
+
+	AuthLogon  = 1
+	AuthLogoff = 2
+)
+
+// Authentication の status_id と logon_type_id。
+const (
+	StatusSuccess = 1
+	StatusFailure = 2
+
+	LogonInteractive       = 2  // 端末の前でのログオン（コンソール、画面）
+	LogonNetwork           = 3  // 端末を割り当てない遠隔のログオン（ssh で命令だけを実行するなど）
+	LogonRemoteInteractive = 10 // 端末を割り当てる遠隔のログオン（ssh の対話など）
 )
 
 // Severity は OCSF の severity_id。
@@ -92,22 +106,33 @@ type Event struct {
 	Message     string   `json:"message,omitempty"`
 	Metadata    Metadata `json:"metadata"`
 
-	Device      *Device        `json:"device,omitempty"`
-	Actor       *Actor         `json:"actor,omitempty"`
-	Process     *Process       `json:"process,omitempty"`
-	File        *File          `json:"file,omitempty"`
-	SrcEndpoint *Endpoint      `json:"src_endpoint,omitempty"`
-	DstEndpoint *Endpoint      `json:"dst_endpoint,omitempty"`
-	Connection  *Connection    `json:"connection_info,omitempty"`
-	Traffic     *Traffic       `json:"traffic,omitempty"`
-	TLS         *TLS           `json:"tls,omitempty"`
-	HTTPRequest *HTTPRequest   `json:"http_request,omitempty"`
-	Query       *DNSQuery      `json:"query,omitempty"`
-	Answers     []DNSAnswer    `json:"answers,omitempty"`
-	RcodeID     *int           `json:"rcode_id,omitempty"`
-	FindingInfo *FindingInfo   `json:"finding_info,omitempty"`
-	Evidences   []Evidence     `json:"evidences,omitempty"`
-	Unmapped    map[string]any `json:"unmapped,omitempty"`
+	Device      *Device      `json:"device,omitempty"`
+	Actor       *Actor       `json:"actor,omitempty"`
+	Process     *Process     `json:"process,omitempty"`
+	File        *File        `json:"file,omitempty"`
+	SrcEndpoint *Endpoint    `json:"src_endpoint,omitempty"`
+	DstEndpoint *Endpoint    `json:"dst_endpoint,omitempty"`
+	Connection  *Connection  `json:"connection_info,omitempty"`
+	Traffic     *Traffic     `json:"traffic,omitempty"`
+	TLS         *TLS         `json:"tls,omitempty"`
+	HTTPRequest *HTTPRequest `json:"http_request,omitempty"`
+	Query       *DNSQuery    `json:"query,omitempty"`
+	Answers     []DNSAnswer  `json:"answers,omitempty"`
+	RcodeID     *int         `json:"rcode_id,omitempty"`
+	FindingInfo *FindingInfo `json:"finding_info,omitempty"`
+	// 以下は Authentication（ログオン）の項目。
+	User         *User    `json:"user,omitempty"`          // ログオンした（しようとした）利用者
+	StatusID     int      `json:"status_id,omitempty"`     // StatusSuccess か StatusFailure
+	StatusDetail string   `json:"status_detail,omitempty"` // 失敗の理由など
+	IsRemote     *bool    `json:"is_remote,omitempty"`
+	LogonTypeID  int      `json:"logon_type_id,omitempty"`
+	AuthProtocol string   `json:"auth_protocol,omitempty"` // password、publickey など
+	Service      *Service `json:"service,omitempty"`       // ログオンを受け付けたサービス（sshd、login など）
+	Session      *Session `json:"session,omitempty"`
+	LogonProcess *Process `json:"logon_process,omitempty"`
+
+	Evidences []Evidence     `json:"evidences,omitempty"`
+	Unmapped  map[string]any `json:"unmapped,omitempty"`
 }
 
 // Metadata はイベントそのものの情報。
@@ -157,6 +182,18 @@ type Actor struct {
 type User struct {
 	Name string `json:"name,omitempty"`
 	UID  string `json:"uid,omitempty"`
+}
+
+// Service はサービス。
+type Service struct {
+	Name string `json:"name"`
+}
+
+// Session はログオンのセッション。
+type Session struct {
+	UID         string `json:"uid,omitempty"`
+	Terminal    string `json:"terminal,omitempty"`     // tty や pts
+	CreatedTime int64  `json:"created_time,omitempty"` // 始まった時刻（UNIX 時間のミリ秒）
 }
 
 // Process はプロセス。
@@ -377,6 +414,7 @@ var (
 	hasSrc     = field{"src_endpoint", func(e *Event) bool { return e.SrcEndpoint != nil }}
 	hasDst     = field{"dst_endpoint", func(e *Event) bool { return e.DstEndpoint != nil }}
 	hasQuery   = field{"query", func(e *Event) bool { return e.Query != nil && e.Query.Hostname != "" }}
+	hasUser    = field{"user", func(e *Event) bool { return e.User != nil && (e.User.Name != "" || e.User.UID != "") }}
 	hasFinding = field{"finding_info", func(e *Event) bool {
 		return e.FindingInfo != nil && e.FindingInfo.UID != "" && e.FindingInfo.Title != ""
 	}}
@@ -387,6 +425,7 @@ var required = map[ClassUID][]field{
 	ClassFileSystemActivity: {hasDevice, hasFile},
 	ClassProcessActivity:    {hasDevice, hasProcess},
 	ClassDetectionFinding:   {hasFinding},
+	ClassAuthentication:     {hasUser},
 	ClassNetworkActivity:    {hasSrc, hasDst},
 	ClassDNSActivity:        {hasQuery},
 	ClassDHCPActivity:       {hasDst},

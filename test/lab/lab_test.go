@@ -575,7 +575,7 @@ func (l *lab) setup(machines []*machine) {
 			"honeytokens": []map[string]string{{"path": l.token(m.id), "kind": "aws"}},
 			"files": map[string]any{"watch": []string{}, "persistence": []string{}, "privilege": []string{},
 				"sensitive": []map[string]any{}, "protect": []string{}},
-			"kernel_modules": false,
+			"kernel_modules": false, "logons": map[string]any{"enabled": false},
 		})
 	}
 }

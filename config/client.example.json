@@ -57,6 +57,12 @@
     "mass_window": "30s"
   },
   "kernel_modules": true,
+  "logons": {
+    "enabled": true,
+    "sessions_dir": "/run/systemd/sessions",
+    "auth_logs": ["/var/log/auth.log", "/var/log/secure"],
+    "journal": true
+  },
   "evidence": {
     "logs": ["/var/log/auth.log", "/var/log/syslog", "/var/log/kern.log"]
   },

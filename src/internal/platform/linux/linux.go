@@ -69,6 +69,7 @@ type Config struct {
 	ConnPoll      time.Duration      // 通信の一覧を取る間隔。既定 DefaultConnPoll
 	KernelModules bool               // カーネルモジュールの読み込みを検知する
 	ModulePoll    time.Duration      // カーネルモジュールの一覧を読む間隔。既定 10 秒
+	Logons        LogonConfig        // ログオンの記録（C4）
 	Agents        []AgentSpec        // 見分ける AI エージェント。nil なら DefaultAgents、空なら見分けない
 	EvidenceLogs  []string           // 証拠として末尾を集めるログ。nil なら DefaultEvidenceLogs、空なら集めない
 	AppControl    bool               // プロセス単位の通信の制御（C7）を使う（NFT が必要）
@@ -137,6 +138,7 @@ func New(cfg Config) *Platform {
 		{cfg.NetworkEvents, platform.CapNetworkEvents, "通信の監視", func() (source, error) { return newConnMonitor(cfg.ConnPoll, p.procs, p.agents) }},
 		{cfg.Files.enabled(), platform.CapFileEvents, "ファイルの監視", func() (source, error) { return newFileMonitor(cfg.Files, p.procs, p.agents, cfg.Logger) }},
 		{cfg.KernelModules, platform.CapKernelModules, "カーネルモジュールの監視", func() (source, error) { return newModuleMonitor(cfg.ModulePoll) }},
+		{cfg.Logons.Enabled, platform.CapLogons, "ログオンの記録", func() (source, error) { return newLogonMonitor(cfg.Logons, cfg.Logger) }},
 	}
 	for _, c := range candidates {
 		if !c.enabled {

@@ -200,6 +200,7 @@ func TestGWAndClient(t *testing.T) {
 		"process_monitor":    false,
 		"connection_monitor": false,
 		"kernel_modules":     false,
+		"logons":             map[string]any{"enabled": false},
 		"files": map[string]any{"watch": []string{}, "persistence": []string{}, "privilege": []string{},
 			"sensitive": []map[string]any{}, "protect": []string{}},
 	})

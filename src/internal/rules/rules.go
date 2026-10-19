@@ -200,6 +200,7 @@ func validID(id string) bool {
 var classes = map[string]event.ClassUID{
 	"file": event.ClassFileSystemActivity, "process": event.ClassProcessActivity, "finding": event.ClassDetectionFinding,
 	"network": event.ClassNetworkActivity, "dns": event.ClassDNSActivity, "dhcp": event.ClassDHCPActivity,
+	"logon": event.ClassAuthentication,
 }
 
 // prepare はルールを確かめ、評価の準備をする。
@@ -236,7 +237,7 @@ func (r *Rule) prepare() error {
 	if c, ok := classes[r.Class]; ok {
 		r.classUID = c
 	} else {
-		return fmt.Errorf("class %q は file、process、network、dns、dhcp、finding のどれかにしてください", r.Class)
+		return fmt.Errorf("class %q は file、process、network、dns、dhcp、logon、finding のどれかにしてください", r.Class)
 	}
 	if t := r.Threshold; t != nil {
 		if t.Count < 2 || t.Count > 10000 {
