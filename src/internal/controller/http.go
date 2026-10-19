@@ -67,7 +67,11 @@ func (c *Controller) Handler() http.Handler {
 	mux.Handle("POST "+api.PathIncidents+"/{id}", c.require(pki.RoleAdmin, c.updateIncident))
 	mux.Handle("POST "+api.PathIncidents+"/{id}/steps/{step}", c.require(pki.RoleAdmin, c.updateStep))
 	mux.Handle("GET "+api.PathIncidents+"/{id}/timeline", c.require(pki.RoleAdmin, c.incidentTimeline))
-	return mux
+	mux.Handle("POST "+api.PathEnrollCodes, c.require(pki.RoleAdmin, c.createEnrollCode))
+	mux.Handle("GET "+api.PathEnrollCodes, c.require(pki.RoleAdmin, c.listEnrollCodes))
+	mux.Handle("DELETE "+api.PathEnrollCodes+"/{id}", c.require(pki.RoleAdmin, c.deleteEnrollCode))
+	mux.HandleFunc("POST "+api.PathEnroll, c.enrollDevice) // 証明書なしで受け付ける唯一の窓口
+	return noCertGate(mux)
 }
 
 // require は接続相手の役割が role の場合だけ h を呼ぶ。

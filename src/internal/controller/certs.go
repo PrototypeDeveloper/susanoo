@@ -81,8 +81,17 @@ func (c *Controller) tlsConfig() *tls.Config {
 	cfg := transport.ServerConfig(c.cfg.CA, c.cfg.Cert, pki.RoleClient, pki.RoleAdmin)
 	cfg.Certificates = nil
 	cfg.GetCertificate = func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return c.cert.Load(), nil }
+	// 証明書なしの接続は、有効な登録コードがある間だけ受け付ける（登録の窓口のほかには noCertGate で通さない）。
+	// 証明書を示した接続は、これまでどおり TLS の段階で確かめる。
+	cfg.ClientAuth = tls.VerifyClientCertIfGiven
 	verify := cfg.VerifyConnection
 	cfg.VerifyConnection = func(cs tls.ConnectionState) error {
+		if len(cs.PeerCertificates) == 0 {
+			if c.enrollWindowOpen() {
+				return nil
+			}
+			return transport.ErrNoPeerCertificate
+		}
 		if err := verify(cs); err != nil {
 			return err
 		}

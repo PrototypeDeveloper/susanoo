@@ -33,6 +33,7 @@ const ctlUsage = `使い方: susanoo ctl <操作> [オプション]
 操作:
   init     CONTROLLERの認証局、署名の鍵、証明書を作る（-two-tier と -issuer で、ルートの認証局を GW の外に置く二段構えにする）
   root     二段構えのルートの認証局を、管理者の手元で作る・使う（susanoo ctl root で説明を表示）
+  enroll   一回限りの登録コードを作る・一覧する・取り消す（例: susanoo ctl enroll create pc-001）。端末は client enroll で登録する
   issue    端末の公開鍵に証明書を発行し、端末に配るファイルを書き出す
   status   全体の状態（ポリシー、端末と機器の台数、危険度の高い端末、証明書の期限が近い端末、最近の検知）を表示する
   devices  端末の一覧を表示する
@@ -68,6 +69,8 @@ func runCtl(args []string, stdout, stderr io.Writer) int {
 		return ctlIssue(args[1:], stdout, stderr)
 	case "root":
 		return ctlRoot(args[1:], stdout, stderr)
+	case "enroll":
+		return ctlEnroll(args[1:], stdout, stderr)
 	case "status":
 		return ctlStatus(args[1:], stdout, stderr)
 	case "events":

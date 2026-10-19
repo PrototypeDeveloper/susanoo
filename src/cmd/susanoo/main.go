@@ -19,8 +19,10 @@ const usage = `使い方: susanoo <モード> [オプション]
   gw           GWモード（すべての通信が通る関所）で起動する。CONTROLLERを同居させる
   client       CLIENTモード（端末の監視）で起動する
   client keygen  端末の鍵を作る
+  client enroll  一回限りの登録コードで端末を登録する（鍵を作り、証明書を受け取る）
   ctl init     CONTROLLERの認証局と鍵を作る
   ctl issue    端末の証明書を発行する
+  ctl enroll   端末の登録コードを作る・一覧する・取り消す
   ctl status   全体の状態を表示する
   ctl devices  端末の一覧を表示する
   ctl events   保存したイベントを検索する
@@ -70,6 +72,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "client":
 		if len(args) > 1 && args[1] == "keygen" {
 			return runKeygen(args[2:], stdout, stderr)
+		}
+		if len(args) > 1 && args[1] == "enroll" {
+			return runEnroll(ctx, args[2:], os.Stdin, stdout, stderr)
 		}
 		if len(args) > 1 && args[1] == "analyzer" {
 			return runAnalyzer(stderr) // 執行部が起動する解析部（使い方には載せない）

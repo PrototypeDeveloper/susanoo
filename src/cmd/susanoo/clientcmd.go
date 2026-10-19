@@ -300,6 +300,7 @@ func runKeygen(args []string, stdout, stderr io.Writer) int {
 	if err := keys.SavePublic(pubPath, priv.Public().(ed25519.PublicKey)); err != nil {
 		return fail(stderr, err)
 	}
-	fmt.Fprintf(stdout, "端末の鍵を作りました。\n次に %s を CONTROLLER に渡し、「susanoo ctl issue」で証明書を発行してください。\n", pubPath)
+	fmt.Fprintf(stdout, "端末の鍵を作りました。\n次に %s を CONTROLLER に渡し、「susanoo ctl issue」で証明書を発行してください"+
+		"（登録コードを使うときは、keygen は要らず「susanoo client enroll」だけで済みます）。\n", pubPath)
 	return exitOK
 }

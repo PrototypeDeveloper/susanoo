@@ -71,7 +71,8 @@ type Config struct {
 	Policy           *policy.Policy    // ポリシー
 	Enforcer         Enforcer          // GW の遮断。nil なら GW では遮断しない
 	LAN              LAN               // GW の LAN。nil なら在席の確認となりすましの検知をしない
-	Issuer           Issuer            // 端末の証明書の更新に使う。nil なら更新しない
+	Issuer           Issuer            // 端末の証明書の更新と登録に使う。nil なら更新も登録もしない
+	Root             *x509.Certificate // 内部の認証局（ルート）の証明書。登録した端末に渡す。nil なら登録しない
 	Canary           *policy.Policy    // 先行適用の版（なければ nil）。Policy は今の版
 	Policies         PolicyManager     // ポリシーの配布に使う。nil なら配布しない
 	Egress           Egress            // 外部通信の制御。nil なら端末のグループを渡さない
@@ -166,6 +167,10 @@ type Controller struct {
 	incidents []*incident // インシデント（M9。mu で守る）
 
 	learning map[string]*learningState // 学習モードのグループ（G2。mu で守る）
+
+	enrollMu       sync.Mutex
+	enrollCodes    map[string]*enrollCode // 端末 ID → 登録コード（M1。enrollMu で守る）
+	enrollAttempts []time.Time            // 最近の登録の要求の時刻（enrollMu で守る）
 }
 
 // New は台帳、監査ログ、イベントの保存先を開いて CONTROLLER を作る。
@@ -250,6 +255,11 @@ func New(cfg Config) (*Controller, error) {
 		return nil, err
 	}
 	if err := c.initLearning(); err != nil {
+		events.Close()
+		al.Close()
+		return nil, err
+	}
+	if err := c.initEnroll(); err != nil {
 		events.Close()
 		al.Close()
 		return nil, err

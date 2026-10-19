@@ -202,6 +202,24 @@ func TestTwoTierPKI(t *testing.T) {
 	}
 	// 端末は、古い発行用の認証局の証明書を連ねた証明書のまま接続を続ける（古い証明書も期限内）。
 	waitFor(t, "GW を起動し直した後の端末の接続", 20*time.Second, func() bool { return l.devices()[pc.id].LastSeen.After(gwRestarted) })
+
+	t.Log("段階7: 二段構えでも、登録コードで端末を登録でき、発行用の認証局の証明書を連ねた証明書とルートの認証局の証明書を受け取る")
+	var code struct {
+		Code string `json:"code"`
+	}
+	if !l.ctlJSON(&code, "enroll", "create", "pc-005", "-ttl", "10m") || code.Code == "" {
+		t.Fatal("ルートの管理者の証明書で ctl enroll create を実行できません")
+	}
+	enrolled := filepath.Join(l.dir, "pc-005")
+	if out, err := inNS(pc.ns, *susanooBin, "client", "enroll", "-controller", controllerAddr, "-id", "pc-005", "-code", code.Code, "-dir", enrolled).CombinedOutput(); err != nil {
+		t.Fatalf("二段構えで登録できません: %v %s", err, out)
+	}
+	if c := readChain(t, filepath.Join(enrolled, "client.crt")); len(c) != 2 || !c[1].Equal(newIssuer) {
+		t.Errorf("登録した端末の証明書の連なり = %d 個", len(c))
+	}
+	if string(mustRead(t, filepath.Join(enrolled, "ca.crt"))) != string(mustRead(t, filepath.Join(rootDir, "ca.crt"))) {
+		t.Error("登録した端末の ca.crt がルートの認証局の証明書ではありません")
+	}
 }
 
 func mustRead(t *testing.T, path string) []byte {

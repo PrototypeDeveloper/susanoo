@@ -51,7 +51,44 @@ const (
 	// （StepUpdate）。"/{ID}/timeline" の GET で時系列（[]TimelineEntry。?all=1 ならすべての種類のイベント、?before=24h で
 	// 開く前のどこから並べるか）。
 	PathIncidents = "/v1/incidents"
+	// PathEnroll は一回限りの登録コードによる端末の初回登録（M1）。端末は証明書なしの TLS で EnrollRequest を POST する。
+	// 応答は EnrollResponse。CONTROLLER は、有効な登録コードがある間だけ、証明書なしの接続を受け付ける。
+	PathEnroll = "/v1/enroll"
+	// PathEnrollCodes は登録コードの管理（管理者）。POST で作り（EnrollCodeCreate。応答の EnrollCode にだけコードが入る）、
+	// GET で一覧（[]EnrollCode）、PathEnrollCodes+"/{端末ID}" の DELETE で取り消す。
+	PathEnrollCodes = "/v1/enroll/codes"
 )
+
+// EnrollCodeCreate は登録コードを作る要求。
+type EnrollCodeCreate struct {
+	ID  string `json:"id"`
+	TTL string `json:"ttl,omitempty"` // 有効期間（例 "24h"。省略すると 24 時間、7 日まで）
+}
+
+// EnrollCode は登録コード。Code は作ったときの応答にだけ入る（CONTROLLER はコードそのものを保存しない）。
+type EnrollCode struct {
+	ID       string    `json:"id"`
+	Code     string    `json:"code,omitempty"`
+	Created  time.Time `json:"created"`
+	Expires  time.Time `json:"expires"`
+	Failures int       `json:"failures"` // 誤った証明の回数（上限に達するとコードを消す）
+}
+
+// EnrollRequest は端末の登録の要求。Proof は登録コードと TLS の exporter で計算した HMAC（enroll.RequestProof）。
+type EnrollRequest struct {
+	ID        string `json:"id"`
+	PublicKey []byte `json:"public_key"` // ed25519
+	Proof     []byte `json:"proof"`
+}
+
+// EnrollResponse は端末の登録の応答。Proof は、登録コードと TLS の exporter で中身を結び付けた HMAC（enroll.ResponseProof）。
+type EnrollResponse struct {
+	Certificate []byte   `json:"certificate"`     // 端末の証明書（DER）
+	Chain       [][]byte `json:"chain,omitempty"` // 連ねる認証局の証明書（DER）
+	CA          []byte   `json:"ca"`              // 内部の認証局（ルート）の証明書（DER）
+	CommandKey  []byte   `json:"command_key"`     // 指示の署名を確かめる公開鍵（ed25519）
+	Proof       []byte   `json:"proof"`
+}
 
 // MaxBodyBytes は要求の本文の上限。
 const MaxBodyBytes = 1 << 20
@@ -423,6 +460,7 @@ type Status struct {
 	Notify         []NotifyStatus  `json:"notify,omitempty"`          // 通知の宛先ごとの送信の状況
 	Incidents      IncidentCounts  `json:"incidents"`                 // 開いているインシデント（M9）
 	Learning       []LearningGroup `json:"learning,omitempty"`        // 学習モードのグループ（G2）
+	EnrollCodes    int             `json:"enroll_codes,omitempty"`    // 有効な登録コードの数（M1。ある間は証明書なしの接続を登録の窓口だけ受け付ける）
 }
 
 // RulesPush は署名付きの検知ルールの配布（M3）。

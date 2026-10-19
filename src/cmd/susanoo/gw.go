@@ -736,7 +736,7 @@ func runGWInProcess(ctx context.Context, g *gwPrepared, pols *gwPolicies, intels
 	})
 	current, canary := pols.store.Policies()
 	intelSet, _ := intels.store.Current()
-	c := &gwController{cfg: cfg, pol: current, canary: canary, pool: g.ca.Pool(), cert: cert, signer: signer, rulesKey: rulesKey, stateDir: stateDir,
+	c := &gwController{cfg: cfg, pol: current, canary: canary, pool: g.ca.Pool(), root: g.ca.Root, cert: cert, signer: signer, rulesKey: rulesKey, stateDir: stateDir,
 		intel: intels, intelSet: intelSet,
 		listener: g.files.listener, quarantine: g.enforcer, issuer: caIssuer{g.ca, log}, policies: pols, changes: changes, certs: certs, log: log}
 	var lanPart *gwLAN
@@ -860,7 +860,7 @@ func serveGWController(conn *os.File, log *slog.Logger) error {
 		}
 		chain = append(chain, inter)
 	}
-	c := &gwController{cfg: cfg, pol: pol, canary: canary, pool: pool, cert: pki.TLSChain(chain, key), signer: signer,
+	c := &gwController{cfg: cfg, pol: pol, canary: canary, pool: pool, root: ca, cert: pki.TLSChain(chain, key), signer: signer,
 		rulesKey: ed25519.PublicKey(hello.RulesKey), intel: remote, intelSet: intelSet, stateDir: hello.StateDir, listener: files.listener, issuer: remote, policies: remote, changes: remote.Changes(), certs: certs, log: log}
 	if cfg.Enforce == nil || *cfg.Enforce {
 		c.quarantine = remote
@@ -1006,6 +1006,7 @@ type gwController struct {
 	pol        *policy.Policy // 今の版
 	canary     *policy.Policy // 先行適用の版（なければ nil）
 	pool       *x509.CertPool
+	root       *x509.Certificate // 内部の認証局（ルート）の証明書。登録した端末に渡す
 	cert       tls.Certificate
 	signer     *sign.Signer
 	rulesKey   ed25519.PublicKey       // 検知ルールの署名を確かめる公開鍵
@@ -1040,6 +1041,7 @@ func (c *gwController) run(ctx context.Context, started func(*controller.Control
 		Policies:         c.policies,
 		Enforcer:         c.quarantine,
 		Issuer:           c.issuer,
+		Root:             c.root,
 		RulesKey:         c.rulesKey,
 		Intel:            c.intel,
 		IntelSet:         c.intelSet,

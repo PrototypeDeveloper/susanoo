@@ -98,6 +98,9 @@ func ctlStatus(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(tw, "学習モード\t%s（学習した名前 %d、遮断 %d）: %s\n", lg.Group, lg.Learned, lg.Blocked, state)
 	}
+	if st.EnrollCodes > 0 {
+		fmt.Fprintf(tw, "登録コード\t%d 個（有効な間は、証明書なしの接続を登録の窓口だけ受け付けます。ctl enroll list で確かめられます）\n", st.EnrollCodes)
+	}
 	if n := st.Incidents; n.Open > 0 {
 		s := fmt.Sprintf("対応中 %d", n.Open)
 		if n.Next != nil {

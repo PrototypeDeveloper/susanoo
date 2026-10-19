@@ -29,7 +29,8 @@ const (
 func (c *Controller) getStatus(w http.ResponseWriter, _ *http.Request, _ pki.Identity) {
 	now := c.now()
 	c.mu.Lock()
-	st := api.Status{Version: version.Version, StartedAt: c.started, Response: c.pol.Response, CertExpiry: c.certExpiry(), IssuerExpiry: c.issuerExpiry()}
+	st := api.Status{Version: version.Version, StartedAt: c.started, Response: c.pol.Response, CertExpiry: c.certExpiry(), IssuerExpiry: c.issuerExpiry(),
+		EnrollCodes: c.activeEnrollCodes(now)}
 	info := c.policyInfoLocked()
 	st.Policy, st.Canary = info.Current, info.Canary
 	for _, d := range c.devices {
