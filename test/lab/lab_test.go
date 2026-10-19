@@ -328,8 +328,8 @@ func buildTopologyWith(t *testing.T, machines []*machine, ipv6 bool, extraInet .
 	for _, ns := range all {
 		ip(t, "netns", "add", ns)
 		ip(t, "-n", ns, "link", "set", "lo", "up")
-		// IPv6 を使う試験でも、スイッチと疑似インターネットでは止める（スイッチのポートが LAN の機器として見えないように）。
-		if ipv6 && ns != nsSW && ns != nsInet {
+		// IPv6 を使う試験でも、スイッチでは止める（スイッチのポートが LAN の機器として見えないように）。
+		if ipv6 && ns != nsSW {
 			sh(t, "ip", "netns", "exec", ns, "sysctl", "-qw", "net.ipv6.conf.all.accept_dad=0", "net.ipv6.conf.default.accept_dad=0")
 		} else {
 			sh(t, "ip", "netns", "exec", ns, "sysctl", "-qw", "net.ipv6.conf.all.disable_ipv6=1")

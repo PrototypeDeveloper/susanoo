@@ -63,6 +63,25 @@ func TestParseND(t *testing.T) {
 	}
 }
 
+// GW の RA は、ルーターの寿命、SLAAC のネットワーク、DNS サーバーを知らせる。
+func TestBuildRA(t *testing.T) {
+	p := netip.MustParsePrefix("fd77::/64")
+	dns := netip.MustParseAddr("fd77::1")
+	b := BuildRA(llGW, macX, RAOptions{HopLimit: 64, RouterLifetime: 1800, Prefixes: []netip.Prefix{p}, Valid: 86400, Preferred: 14400,
+		RDNSS: []netip.Addr{dns}, RDNSSLifetime: 600})
+	ra, err := ParseND(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ra.RouterLifetime != 1800 || len(ra.Prefixes) != 1 || ra.Prefixes[0] != p || len(ra.RDNSS) != 1 || ra.RDNSS[0] != dns || !slices.Equal(ra.LinkAddr, macX) {
+		t.Errorf("= %+v", ra)
+	}
+	m := b[ipv6HeaderLen:]
+	if m[4] != 64 || binary.BigEndian.Uint32(m[16+8+4:]) != 86400 || binary.BigEndian.Uint32(m[16+8+8:]) != 14400 {
+		t.Errorf("ホップの上限か期限が違う: %x", m)
+	}
+}
+
 // advertise は DHCPv6 の ADVERTISE を組み立てる（試験用）。
 func advertise(src, dst netip.Addr, xid uint32, dns, addr netip.Addr) []byte {
 	m := []byte{DHCPv6Advertise, byte(xid >> 16), byte(xid >> 8), byte(xid)}

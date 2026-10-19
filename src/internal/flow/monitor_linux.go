@@ -31,6 +31,8 @@ const (
 type Config struct {
 	LAN        netip.Prefix // LAN のネットワーク
 	Gateway    netip.Addr   // GW の LAN 側のアドレス
+	LAN6       netip.Prefix // LAN の IPv6 のネットワーク（IPv6 を転送しないなら無効）
+	Gateway6   netip.Addr   // GW の LAN 側の IPv6 アドレス
 	LogGroup   uint16       // 最初の数パケットの NFLOG のグループ
 	BlockGroup uint16       // 落としたパケットの NFLOG のグループ（0 なら受け取らない）
 	OnRecord   func(Record)
@@ -159,7 +161,7 @@ func RunSockets(ctx context.Context, cfg Config, socks *Sockets) error {
 	})
 	go func() { <-ctx.Done(); ct.Close(); nl.Close() }()
 
-	p := newProcessor(cfg.LAN, cfg.Gateway, cfg.OnRecord)
+	p := newProcessor([]netip.Prefix{cfg.LAN, cfg.LAN6}, []netip.Addr{cfg.Gateway, cfg.Gateway6}, cfg.OnRecord)
 	tick := time.NewTicker(expireEvery)
 	defer tick.Stop()
 	cfg.Logger.Info("通信の記録を始めました", "LAN", cfg.LAN, "NFLOG のグループ", cfg.LogGroup)

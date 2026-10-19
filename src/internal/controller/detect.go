@@ -179,7 +179,7 @@ func (c *Controller) resolveLocked(s subject) target {
 func (c *Controller) hostByIPLocked(ip netip.Addr) *host {
 	var found *host
 	for _, h := range c.hosts {
-		if h.IP == ip && (found == nil || h.LastSeen.After(found.LastSeen)) {
+		if h.hasAddr(ip) && (found == nil || h.LastSeen.After(found.LastSeen)) {
 			found = h
 		}
 	}

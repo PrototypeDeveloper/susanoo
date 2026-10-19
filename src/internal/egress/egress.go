@@ -64,6 +64,7 @@ type Config struct {
 	Policy *policy.Policy
 	LAN    string     // LAN 側のインターフェース
 	DNS    netip.Addr // GW の LAN 側のアドレス。有効なら LAN の DNS を GW のリゾルバに向け直す
+	DNS6   netip.Addr // GW の LAN 側の IPv6 アドレス。有効なら LAN の IPv6 の DNS も向け直す
 	NFT    nft.Runner // nftables に直接反映する（執行部、または権限を分けないとき）
 	Remote Enforcer   // 判断だけを行い、反映は Remote に任せる（非特権の側）
 	// OnLearn は、学習モードで通した名前（blocked が false）と、遮断した名前（true）を知らせる。
@@ -210,7 +211,7 @@ func compile(pg policy.Group) (*group, error) {
 // rules は現在の所属で nftables のルールを作る。
 func (e *Engine) rules() nft.Egress {
 	m := e.members.Load()
-	r := nft.Egress{LAN: e.cfg.LAN, DNS: e.cfg.DNS, DoH: DoHServers}
+	r := nft.Egress{LAN: e.cfg.LAN, DNS: e.cfg.DNS, DNS6: e.cfg.DNS6, DoH: DoHServers}
 	for i, g := range e.comp.Load().groups {
 		ng := nft.EgressGroup{Name: g.name, Default: g.def, Bypass: g.bypass, Allow: g.specs, Deny: g.denyNet}
 		if i > 0 {

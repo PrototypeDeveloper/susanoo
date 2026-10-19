@@ -84,6 +84,25 @@ func TestRouterApply(t *testing.T) {
 	if got, _ := os.ReadFile(forward); string(got) != "1\n" {
 		t.Errorf("転送の設定 = %q", got)
 	}
+	// IPv6 を転送するときは、WAN 側を RA に従わせたまま（2）、IPv6 の転送を有効にする。
+	dir := t.TempDir()
+	for _, d := range []string{"lan0", "wan0", "all"} {
+		os.MkdirAll(filepath.Join(dir, d), 0o755)
+		os.WriteFile(filepath.Join(dir, d, "accept_ra"), []byte("1\n"), 0o644)
+		os.WriteFile(filepath.Join(dir, d, "forwarding"), []byte("0\n"), 0o644)
+	}
+	v6 := &Router{Rules: nft.Router{LAN: "lan0", WAN: "wan0", ManagementPort: 8443, IPv6: true}, NFT: r, forwardPath: forward, sysctlDir: dir}
+	if err := v6.Apply(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for file, want := range map[string]string{"lan0/accept_ra": "0\n", "wan0/accept_ra": "2\n", "all/forwarding": "1\n", "lan0/forwarding": "0\n"} {
+		if got, _ := os.ReadFile(filepath.Join(dir, file)); string(got) != want {
+			t.Errorf("%s = %q", file, got)
+		}
+	}
+	if s := r.scripts[len(r.scripts)-1]; strings.Contains(s, "nfproto ipv6 drop") {
+		t.Errorf("IPv6 を転送するのに遮断している:\n%s", s)
+	}
 	bad := &Router{Rules: nft.Router{LAN: "x", WAN: "x", ManagementPort: 8443}, NFT: r, forwardPath: forward, acceptRAPath: acceptRA}
 	if err := bad.Apply(context.Background()); err == nil {
 		t.Error("不正なルールを適用できた")

@@ -15,7 +15,8 @@ var ifacePattern = regexp.MustCompile(`^[A-Za-z0-9_.@-]{1,15}$`)
 // Router はルーター方式の GW のルール（G1、G12）。
 //
 //   - LAN から WAN への通信を NAT で送り出し、その戻りの通信だけを通す
-//   - LAN の IPv6 の転送は遮断する（IPv6 の抜け道を防ぐ。MVP では LAN で IPv6 を使わない）
+//   - LAN の IPv6 の転送は、IPv6 を有効にしない限り遮断する（IPv6 の抜け道を防ぐ）。有効にすると、IPv4 と同じく
+//     LAN から WAN へだけ通し、WAN 側のアドレスに変換する（masquerade は inet のテーブルで IPv6 にも効く）
 //   - GW 自身には、LAN から DHCP、DNS、管理通信、管理用のポート（SSH など）、ping（IPv4 と IPv6）だけを受け付ける
 //
 // 端末単位の遮断（GWTable）はこれより先に評価する。
@@ -26,6 +27,7 @@ type Router struct {
 	DHCP           bool     // LAN から DHCP を受け付ける
 	DNS            bool     // LAN から DNS を受け付ける
 	WANDHCP        bool     // WAN 側のアドレスを DHCP で得る
+	IPv6           bool     // LAN の IPv6 を転送する（LAN から WAN へ。WAN 側のアドレスに変換する）
 }
 
 // Script はテーブルを作り直すスクリプトを返す。
@@ -65,12 +67,15 @@ func (r Router) Script() (string, error) {
 		input = append(input, fmt.Sprintf("iifname %s udp sport 67 udp dport 68 accept", wan))
 	}
 
-	forward := []string{
-		"meta nfproto ipv6 drop",
+	var forward []string
+	if !r.IPv6 {
+		forward = append(forward, "meta nfproto ipv6 drop")
+	}
+	forward = append(forward,
 		"ct state established,related accept",
 		"ct state invalid drop",
 		fmt.Sprintf("iifname %s oifname %s accept", lan, wan),
-	}
+	)
 
 	var b strings.Builder
 	b.WriteString(replaceTable(RouterTable))

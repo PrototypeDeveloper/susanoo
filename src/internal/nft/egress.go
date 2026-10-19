@@ -23,6 +23,7 @@ const EgressTable = "susanoo_egress"
 type Egress struct {
 	LAN    string
 	DNS    netip.Addr     // GW の LAN 側のアドレス。無効なら DNS を向け直さない
+	DNS6   netip.Addr     // GW の LAN 側の IPv6 アドレス。有効なら IPv6 の DNS も向け直す
 	DoH    []netip.Prefix // 既知の DoH サーバー
 	Groups []EgressGroup  // 0 番目が既定のグループ
 }
@@ -125,11 +126,19 @@ func (e Egress) Script() (string, error) {
 	for i, g := range e.Groups {
 		writeRegularChain(&b, fmt.Sprintf("g%d", i), groupRules(i, g))
 	}
+	var dns []string
 	if e.DNS.Is4() {
-		writeChainPriority(&b, "dns", "nat", "prerouting", "dstnat", "accept", []string{
+		dns = append(dns,
 			fmt.Sprintf("iifname %q ip daddr != %s udp dport 53 dnat ip to %s:53", e.LAN, e.DNS, e.DNS),
-			fmt.Sprintf("iifname %q ip daddr != %s tcp dport 53 dnat ip to %s:53", e.LAN, e.DNS, e.DNS),
-		})
+			fmt.Sprintf("iifname %q ip daddr != %s tcp dport 53 dnat ip to %s:53", e.LAN, e.DNS, e.DNS))
+	}
+	if e.DNS6.Is6() && !e.DNS6.Is4In6() && e.DNS6.Zone() == "" {
+		dns = append(dns,
+			fmt.Sprintf("iifname %q ip6 daddr != %s udp dport 53 dnat ip6 to [%s]:53", e.LAN, e.DNS6, e.DNS6),
+			fmt.Sprintf("iifname %q ip6 daddr != %s tcp dport 53 dnat ip6 to [%s]:53", e.LAN, e.DNS6, e.DNS6))
+	}
+	if len(dns) > 0 {
+		writeChainPriority(&b, "dns", "nat", "prerouting", "dstnat", "accept", dns)
 	}
 	b.WriteString("}\n")
 	return b.String(), nil

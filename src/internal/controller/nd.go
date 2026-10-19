@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"susanoo/internal/event"
+	"susanoo/internal/policy"
 )
 
 // IPv6 の LAN の監視（G8）。
@@ -75,12 +76,43 @@ type raInfo struct {
 	rdnss    []netip.Addr
 }
 
+// addrs は機器のアドレス（IPv4 と、リンクローカルでない IPv6）を返す。グループと隔離の判断に使う。
+func (h *host) addrs() []netip.Addr {
+	var out []netip.Addr
+	if h.IP.IsValid() {
+		out = append(out, h.IP)
+	}
+	for _, e := range h.IPv6 {
+		if !e.Addr.IsLinkLocalUnicast() {
+			out = append(out, e.Addr)
+		}
+	}
+	return out
+}
+
+// hasAddr は、機器が a を使っているか（IPv4 か、近隣探索で見えた IPv6）を返す。
+func (h *host) hasAddr(a netip.Addr) bool {
+	return h.IP == a || slices.ContainsFunc(h.IPv6, func(e ip6Entry) bool { return e.Addr == a })
+}
+
 // addIPv6Locked は機器の IPv6 アドレスを覚える。数が上限を超えたら、最も古いものを忘れる。
+// 隔離中の機器や、既定でないグループの機器のアドレスが増えたら、GW の遮断と DNS の判断に反映する。
 func (c *Controller) addIPv6Locked(h *host, a netip.Addr, now time.Time) {
 	if i := slices.IndexFunc(h.IPv6, func(e ip6Entry) bool { return e.Addr == a }); i >= 0 {
 		h.IPv6[i].Seen = now
 		return
 	}
+	defer func() {
+		if a.IsLinkLocalUnicast() {
+			return
+		}
+		switch {
+		case c.isolatedHostLocked(h):
+			c.syncLocked()
+		case c.effectiveGroupLocked(c.hostGroupLocked(h), c.hostCanaryLocked(h)) != policy.DefaultGroup:
+			c.refreshMembershipLocked()
+		}
+	}()
 	h.IPv6 = append(h.IPv6, ip6Entry{Addr: a, Seen: now})
 	if len(h.IPv6) > maxHostIPv6 {
 		oldest := 0

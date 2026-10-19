@@ -79,6 +79,42 @@ type routerConfig struct {
 	// TrustedRouters は、LAN のルーター（や DHCPv6 のサーバー）として認める機器の MAC アドレス。その RA と DHCPv6 を不正としない。
 	TrustedRouters []string        `json:"trusted_routers"`
 	NDProbe        config.Duration `json:"nd_probe_interval"` // ルーター要請と DHCPv6 の問い合わせで、不正なルーターとサーバーを探す間隔。既定 5m
+	// IPv6 は LAN の IPv6 を転送する（LAN 側のインターフェースに設定した /64 の IPv6 アドレスのネットワークを RA で知らせ、
+	// WAN 側のアドレスに変換して送り出す）。既定 false（LAN の IPv6 の転送を遮断する）。
+	IPv6       bool            `json:"ipv6"`
+	RAInterval config.Duration `json:"ra_interval"` // GW のルーター広告の間隔。既定 200s
+}
+
+// defaultRAInterval は GW のルーター広告の既定の間隔。端末のルーター要請には、間隔によらずすぐに答える。
+const defaultRAInterval = 200 * time.Second
+
+// listenDNS6 は GW の LAN 側の IPv6 アドレスで DNS を待ち受ける。起動の直後はアドレスの重複の確認が終わっておらず
+// 使えない（EADDRNOTAVAIL）ことがあるので、10 秒まで待ってやり直す。
+func listenDNS6(ctx context.Context, addr netip.Addr) (net.PacketConn, net.Listener, error) {
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		pc, tl, err := dns.Listen(addr, 0)
+		if err == nil || !errors.Is(err, syscall.EADDRNOTAVAIL) || time.Now().After(deadline) {
+			return pc, tl, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+// lanIPv6 は、IPv6 を転送するときに LAN に知らせる GW の IPv6 アドレスとネットワークを返す（SLAAC のため /64 に限る）。
+func lanIPv6(lan string) (netip.Addr, netip.Prefix, error) {
+	addr, prefix, err := gw.InterfacePrefix6(lan)
+	if err != nil {
+		return netip.Addr{}, netip.Prefix{}, fmt.Errorf("router.ipv6 には、LAN 側のインターフェースに /64 の IPv6 アドレス（ULA など）が必要です: %w", err)
+	}
+	if prefix.Bits() != 64 {
+		return netip.Addr{}, netip.Prefix{}, fmt.Errorf("router.ipv6 には、LAN 側の IPv6 アドレスのネットワークを /64 にしてください（%s）", prefix)
+	}
+	return addr, prefix, nil
 }
 
 // defaultNDProbe は、不正なルーターと DHCPv6 のサーバーを探す既定の間隔。
@@ -134,9 +170,15 @@ func runGW(ctx context.Context, args []string, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, fmt.Errorf("listen %q はアドレスとポート（例: 192.168.10.1:8443）で書いてください", cfg.Listen))
 	}
-	if cfg.Router != nil {
-		if _, err := cfg.Router.trustedRouters(); err != nil {
+	if r := cfg.Router; r != nil {
+		if _, err := r.trustedRouters(); err != nil {
 			return fail(stderr, err)
+		}
+		if d := r.RAInterval.Or(defaultRAInterval); d < 4*time.Second || d > 1800*time.Second {
+			return fail(stderr, errors.New("router.ra_interval は 4s から 30m にしてください"))
+		}
+		if d := r.NDProbe.Or(defaultNDProbe); d < time.Second {
+			return fail(stderr, errors.New("router.nd_probe_interval は 1s 以上にしてください"))
 		}
 	}
 	if (cfg.DHCP != nil || cfg.DNS != nil) && cfg.Router == nil {
@@ -407,6 +449,12 @@ func prepareGW(ctx context.Context, cfg gwConfig, pol *policy.Policy, listen net
 	if err != nil {
 		return nil, err
 	}
+	var lanAddr6 netip.Addr
+	if r.IPv6 {
+		if lanAddr6, _, err = lanIPv6(r.LAN); err != nil {
+			return nil, err
+		}
+	}
 	if listen.Addr() != lanAddr {
 		log.Warn("管理通信の待ち受けアドレスが LAN 側のアドレスと違います", "listen", listen, "LAN", lanAddr)
 	}
@@ -422,7 +470,7 @@ func prepareGW(ctx context.Context, cfg gwConfig, pol *policy.Policy, listen net
 		adminPorts = *r.AdminPorts
 	}
 	router := &gw.Router{
-		Rules: nft.Router{LAN: r.LAN, WAN: r.WAN, ManagementPort: listen.Port(), AdminPorts: adminPorts, DHCP: cfg.DHCP != nil, DNS: cfg.DNS != nil, WANDHCP: r.WANDHCP},
+		Rules: nft.Router{LAN: r.LAN, WAN: r.WAN, ManagementPort: listen.Port(), AdminPorts: adminPorts, DHCP: cfg.DHCP != nil, DNS: cfg.DNS != nil, WANDHCP: r.WANDHCP, IPv6: r.IPv6},
 		NFT:   runner,
 	}
 	if err := router.Apply(ctx); err != nil {
@@ -433,7 +481,7 @@ func prepareGW(ctx context.Context, cfg gwConfig, pol *policy.Policy, listen net
 	// 外部通信の制御（G2、G4）はルーター方式で常に有効にする。DNS の制御（G3）は dns の設定があるときだけ。
 	ecfg := egress.Config{Policy: pol, LAN: r.LAN, NFT: runner, Logger: log}
 	if cfg.DNS != nil {
-		ecfg.DNS = lanAddr
+		ecfg.DNS, ecfg.DNS6 = lanAddr, lanAddr6
 	}
 	if g.engine, err = egress.New(ecfg); err != nil {
 		return nil, err
@@ -468,6 +516,23 @@ func prepareGW(ctx context.Context, cfg gwConfig, pol *policy.Policy, listen net
 		if err != nil {
 			return nil, err
 		}
+		if lanAddr6.IsValid() {
+			pc6, tl6, err := listenDNS6(ctx, lanAddr6)
+			if err != nil {
+				return nil, err
+			}
+			g.files.dnsUDP6, err = pc6.(*net.UDPConn).File()
+			pc6.Close()
+			if err != nil {
+				tl6.Close()
+				return nil, err
+			}
+			g.files.dnsTCP6, err = tl6.(*net.TCPListener).File()
+			tl6.Close()
+			if err != nil {
+				return nil, err
+			}
+		}
 	}
 	if cfg.FlowLog == nil || *cfg.FlowLog {
 		if err := startFlowLog(ctx, r.LAN, runner); err != nil {
@@ -490,6 +555,8 @@ type gwFiles struct {
 	dhcp     *os.File // DHCP（UDP 67）
 	dnsUDP   *os.File // DNS（UDP 53）
 	dnsTCP   *os.File // DNS（TCP 53）
+	dnsUDP6  *os.File // DNS（IPv6 の UDP 53。IPv6 を転送するとき）
+	dnsTCP6  *os.File // DNS（IPv6 の TCP 53）
 	flowCT   *os.File // conntrack のイベント（netlink）
 	flowLog  *os.File // NFLOG（netlink）
 }
@@ -507,7 +574,7 @@ func (f *gwFiles) controllerEntries() []fileEntry {
 // lanEntries は LAN 側の処理に渡すソケットを返す。
 func (f *gwFiles) lanEntries() []fileEntry {
 	return []fileEntry{
-		{"arp", &f.arp}, {"nd", &f.nd}, {"dhcp", &f.dhcp}, {"dns_udp", &f.dnsUDP}, {"dns_tcp", &f.dnsTCP},
+		{"arp", &f.arp}, {"nd", &f.nd}, {"dhcp", &f.dhcp}, {"dns_udp", &f.dnsUDP}, {"dns_tcp", &f.dnsTCP}, {"dns_udp6", &f.dnsUDP6}, {"dns_tcp6", &f.dnsTCP6},
 		{"flow_conntrack", &f.flowCT}, {"flow_nflog", &f.flowLog},
 	}
 }
@@ -1258,6 +1325,40 @@ func (l *gwLAN) SetMembership(ctx context.Context, m egress.Membership) error {
 	return nil
 }
 
+// advertise は、GW を LAN の IPv6 のルーターとして知らせる RA を、間をおいて送る。端末のルーター要請には、
+// 前の RA から 3 秒（RFC 4861 の MIN_DELAY_BETWEEN_RAS）以上たっていれば、すぐに答える。
+func (l *gwLAN) advertise(ctx context.Context, interval time.Duration, prefix netip.Prefix, rdnss []netip.Addr, solicited <-chan struct{}) {
+	lifetime := min(max(3*interval, 30*time.Second), 9000*time.Second)
+	opts := gw.RAOptions{
+		HopLimit: 64, RouterLifetime: uint16(lifetime / time.Second), Prefixes: []netip.Prefix{prefix},
+		Valid: 86400, Preferred: 14400, RDNSS: rdnss, RDNSSLifetime: uint32(lifetime / time.Second),
+	}
+	l.log.Info("LAN に IPv6 のルーター広告を送ります", "ネットワーク", prefix, "間隔", interval, "DNS サーバー", rdnss)
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	var last time.Time
+	send := func() {
+		if err := l.lan.Advertise(opts); err != nil {
+			l.log.Warn("ルーター広告を送れません", "エラー", err)
+			return
+		}
+		last = time.Now()
+	}
+	send()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			send()
+		case <-solicited:
+			if time.Since(last) >= 3*time.Second {
+				send()
+			}
+		}
+	}
+}
+
 // probeIPv6 は、間をおいてルーター要請と DHCPv6 の問い合わせを送り、答える不正なルーターとサーバーを探す。
 // リンクローカルのアドレスがない（LAN で IPv6 を止めている）ときは、最初の 1 回だけログに残す。
 func (l *gwLAN) probeIPv6(ctx context.Context, interval time.Duration) {
@@ -1315,11 +1416,18 @@ func (l *gwLAN) run(ctx context.Context, sink privsep.LANObserver) error {
 		}
 	})
 	background("ARP の監視", l.lan.Run)
+	solicited := make(chan struct{}, 1) // 端末のルーター要請（GW の RA ですぐに答える）
 	if l.lan.HasND() {
 		l.lan.SetNDHandler(func(ev gw.NDEvent) {
 			switch {
 			case ev.ND != nil:
 				n := ev.ND
+				if n.Type == gw.NDRouterSolicit {
+					select {
+					case solicited <- struct{}{}:
+					default:
+					}
+				}
 				sink.ObserveND(controller.NDObservation{Frame: ev.FrameMAC, Type: int(n.Type), Src: n.Src, Target: n.Target,
 					Override: n.Override, RouterLifetime: int(n.RouterLifetime), Prefixes: n.Prefixes, RDNSS: n.RDNSS})
 			case ev.DHCPv6 != nil:
@@ -1329,6 +1437,19 @@ func (l *gwLAN) run(ctx context.Context, sink privsep.LANObserver) error {
 		})
 		background("近隣探索の監視", l.lan.RunND)
 		go l.probeIPv6(ctx, cfg.Router.NDProbe.Or(defaultNDProbe))
+		if cfg.Router.IPv6 {
+			addr6, prefix6, err := lanIPv6(cfg.Router.LAN)
+			if err != nil {
+				return err
+			}
+			var rdnss []netip.Addr
+			if cfg.DNS != nil {
+				rdnss = []netip.Addr{addr6}
+			}
+			go l.advertise(ctx, cfg.Router.RAInterval.Or(defaultRAInterval), prefix6, rdnss, solicited)
+		}
+	} else if cfg.Router.IPv6 {
+		return errors.New("router.ipv6 には IPv6 の近隣探索のソケットが必要です")
 	}
 	if d := cfg.DHCP; d != nil {
 		if len(d.DNS) == 0 && cfg.DNS != nil {
@@ -1349,19 +1470,32 @@ func (l *gwLAN) run(ctx context.Context, sink privsep.LANObserver) error {
 		if err != nil {
 			return err
 		}
-		pc, err := net.FilePacketConn(l.files.dnsUDP)
-		if err != nil {
-			return err
+		var pcs []net.PacketConn
+		var tls []net.Listener
+		for _, s := range [][2]*os.File{{l.files.dnsUDP, l.files.dnsTCP}, {l.files.dnsUDP6, l.files.dnsTCP6}} {
+			if s[0] == nil || s[1] == nil {
+				continue
+			}
+			pc, err := net.FilePacketConn(s[0])
+			if err != nil {
+				return err
+			}
+			tl, err := net.FileListener(s[1])
+			if err != nil {
+				return err
+			}
+			pcs, tls = append(pcs, pc), append(tls, tl)
 		}
-		tl, err := net.FileListener(l.files.dnsTCP)
-		if err != nil {
-			return err
-		}
-		background("DNS リゾルバ", func(ctx context.Context) error { return resolver.ServeConns(ctx, pc, tl) })
+		background("DNS リゾルバ", func(ctx context.Context) error { return resolver.ServeAll(ctx, pcs, tls) })
 	}
 	if l.files.flowCT != nil {
 		fcfg := flow.Config{LAN: l.lan.Prefix(), Gateway: l.lan.Addr(), LogGroup: flow.DefaultLogGroup, BlockGroup: flow.DefaultBlockGroup,
 			OnRecord: func(r flow.Record) { sink.RecordFlow(flowRecord(r)) }, Logger: log}
+		if cfg.Router.IPv6 {
+			if addr6, prefix6, err := lanIPv6(cfg.Router.LAN); err == nil {
+				fcfg.LAN6, fcfg.Gateway6 = prefix6, addr6
+			}
+		}
 		socks := &flow.Sockets{Conntrack: l.files.flowCT, NFLOG: l.files.flowLog}
 		background("通信の記録", func(ctx context.Context) error { return flow.RunSockets(ctx, fcfg, socks) })
 	}

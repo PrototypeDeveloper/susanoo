@@ -9,6 +9,7 @@ package flow
 
 import (
 	"net/netip"
+	"slices"
 	"time"
 )
 
@@ -38,25 +39,48 @@ type Record struct {
 
 // processor はイベントとパケットから記録を作る。単一のゴルーチンから使う。
 type processor struct {
-	lan     netip.Prefix
-	gateway netip.Addr
-	emit    func(Record)
-	tracker *tracker
+	lans     []netip.Prefix // LAN のネットワーク（IPv4 と、IPv6 を転送するなら IPv6）
+	gateways []netip.Addr   // GW の LAN 側のアドレス
+	emit     func(Record)
+	tracker  *tracker
 }
 
-func newProcessor(lan netip.Prefix, gateway netip.Addr, emit func(Record)) *processor {
-	return &processor{lan: lan, gateway: gateway, emit: emit, tracker: newTracker()}
+// newProcessor は、LAN のネットワーク lans と GW の LAN 側のアドレス gateways（無効なものは除く）で記録を作る。
+func newProcessor(lans []netip.Prefix, gateways []netip.Addr, emit func(Record)) *processor {
+	p := &processor{emit: emit, tracker: newTracker()}
+	for _, l := range lans {
+		if l.IsValid() {
+			p.lans = append(p.lans, l)
+		}
+	}
+	for _, g := range gateways {
+		if g.IsValid() {
+			p.gateways = append(p.gateways, g)
+		}
+	}
+	return p
+}
+
+// inLAN は、アドレスが LAN のネットワークの中かを返す。
+func (p *processor) inLAN(a netip.Addr) bool {
+	a = a.Unmap()
+	for _, l := range p.lans {
+		if l.Contains(a) {
+			return true
+		}
+	}
+	return false
 }
 
 // outbound は LAN から外へ転送する通信かどうかを返す。
 func (p *processor) outbound(src, dst, replySrc netip.Addr) bool {
-	return p.lan.Contains(src.Unmap()) && !p.lan.Contains(dst.Unmap()) && replySrc.Unmap() != p.gateway
+	return p.inLAN(src) && !p.inLAN(dst) && !slices.Contains(p.gateways, replySrc.Unmap())
 }
 
 // packet は NFLOG で受け取った IP のパケットを処理する。
 func (p *processor) packet(b []byte, now time.Time) {
 	s, ok := parseTCP(b)
-	if !ok || !p.lan.Contains(s.src.Addr().Unmap()) || p.lan.Contains(s.dst.Addr().Unmap()) {
+	if !ok || !p.inLAN(s.src.Addr()) || p.inLAN(s.dst.Addr()) {
 		return
 	}
 	info, ok := p.tracker.add(s, now)
@@ -69,7 +93,7 @@ func (p *processor) packet(b []byte, now time.Time) {
 // blocked は、GW が落として NFLOG で渡したパケットを、接続の試みの記録にする。
 func (p *processor) blocked(b []byte, now time.Time) {
 	src, dst, proto, ok := parseIP(b)
-	if !ok || !p.lan.Contains(src.Addr().Unmap()) || p.lan.Contains(dst.Addr().Unmap()) {
+	if !ok || !p.inLAN(src.Addr()) || p.inLAN(dst.Addr()) {
 		return
 	}
 	p.emit(Record{Kind: Blocked, Time: now, Proto: proto, Src: src, Dst: dst, Start: now, End: now})

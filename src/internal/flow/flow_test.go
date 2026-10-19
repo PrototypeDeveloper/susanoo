@@ -274,7 +274,11 @@ func TestTrackerOutOfOrderAndExpiry(t *testing.T) {
 // ctMessage は試験用の conntrack の接続の終わりのメッセージを作る。
 func ctMessage(orig, reply [2]netip.AddrPort, proto uint8) []byte {
 	tup := func(t [2]netip.AddrPort) []byte {
-		ip := append(nlAttr(ctaIPv4Src, t[0].Addr().AsSlice()), nlAttr(ctaIPv4Dst, t[1].Addr().AsSlice())...)
+		src, dst := uint16(ctaIPv4Src), uint16(ctaIPv4Dst)
+		if t[0].Addr().Is6() {
+			src, dst = ctaIPv6Src, ctaIPv6Dst
+		}
+		ip := append(nlAttr(src, t[0].Addr().AsSlice()), nlAttr(dst, t[1].Addr().AsSlice())...)
 		p := nlAttr(ctaProtoNum, []byte{proto})
 		p = append(p, nlAttr(ctaProtoSrcPort, binary.BigEndian.AppendUint16(nil, t[0].Port()))...)
 		p = append(p, nlAttr(ctaProtoDstPort, binary.BigEndian.AppendUint16(nil, t[1].Port()))...)
@@ -349,7 +353,7 @@ func TestNFLog(t *testing.T) {
 
 func TestProcessor(t *testing.T) {
 	var got []Record
-	p := newProcessor(lan, gwLAN, func(r Record) { got = append(got, r) })
+	p := newProcessor([]netip.Prefix{lan}, []netip.Addr{gwLAN}, func(r Record) { got = append(got, r) })
 	now := time.Now()
 
 	// TLS の始まりを記録し、接続の終わりの記録にも SNI を付ける。
@@ -379,10 +383,38 @@ func TestProcessor(t *testing.T) {
 	}
 }
 
+// IPv6 を転送するときは、LAN の IPv6 のネットワークから外への接続も記録する（GW 自身の通信は記録しない）。
+func TestProcessorIPv6(t *testing.T) {
+	var got []Record
+	lan6, gw6 := netip.MustParsePrefix("fd77::/64"), netip.MustParseAddr("fd77::1")
+	p := newProcessor([]netip.Prefix{lan, lan6}, []netip.Addr{gwLAN, gw6}, func(r Record) { got = append(got, r) })
+	c6 := netip.MustParseAddrPort("[fd77::100]:40000")
+	s6 := netip.MustParseAddrPort("[2001:db8:113::2]:443")
+	wan6 := netip.MustParseAddrPort("[2001:db8:113::1]:40000")
+	for _, c := range [][2][2]netip.AddrPort{
+		{{c6, s6}, {s6, wan6}}, // LAN から外（NAT66）
+		{{c6, netip.MustParseAddrPort("[fd77::1]:53")}, {netip.MustParseAddrPort("[fd77::1]:53"), c6}}, // GW のリゾルバ
+		{{c6, netip.MustParseAddrPort("[2001:db8:113::2]:53")}, {netip.AddrPortFrom(gw6, 53), c6}},     // 向け直した DNS
+	} {
+		m, err := parseMessages(ctMessage(c[0], c[1], 6))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ct, err := parseConntrack(m[0].data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.destroyed(ct, time.Now())
+	}
+	if len(got) != 1 || got[0].Src != c6 || got[0].Dst != s6 {
+		t.Fatalf("記録 = %+v", got)
+	}
+}
+
 // GW が落としたパケットは、LAN から外への接続の試みとして記録する。
 func TestProcessorBlocked(t *testing.T) {
 	var got []Record
-	p := newProcessor(lan, gwLAN, func(r Record) { got = append(got, r) })
+	p := newProcessor([]netip.Prefix{lan}, []netip.Addr{gwLAN}, func(r Record) { got = append(got, r) })
 	now := time.Now()
 	p.blocked(ipv4TCP(client, server, 1, true, nil), now)
 	p.blocked(ipv4TCP(server, client, 1, true, nil), now) // 外から LAN

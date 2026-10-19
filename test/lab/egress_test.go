@@ -40,6 +40,7 @@ var extraHelpers = map[string]func(string) int{
 	"arpscan":  arpScan,
 	"dnsserve": dnsServe,
 	"dig":      dig,
+	"dig6":     dig6,
 	"udpecho":  udpEcho,
 	"udp":      udpProbe,
 	"tls":      tlsHello,
@@ -228,6 +229,12 @@ var upstreamRecords = map[string]string{
 	"a.canary.test":  "203.0.113.2", // ポリシーの配布の試験で、新しい版だけが拒否する名前
 }
 
+// upstreamRecords6 は試験用の上流の DNS サーバーが返す AAAA レコード。
+var upstreamRecords6 = map[string]string{
+	"v6.test":      "2001:db8:113::2",
+	"v6other.test": "2001:db8:113::4",
+}
+
 // dnsName は問い合わせの名前を読む（圧縮なし）。名前の後ろの位置も返す。
 func dnsName(b []byte, off int) (string, int) {
 	var labels []string
@@ -269,7 +276,14 @@ func dnsServe(addr string) int {
 		binary.BigEndian.PutUint16(resp[8:], 0)
 		binary.BigEndian.PutUint16(resp[10:], 0)
 		ip, ok := upstreamRecords[name]
+		ip6, ok6 := upstreamRecords6[name]
 		switch {
+		case ok6 && qtype == 28:
+			binary.BigEndian.PutUint16(resp[6:], 1)
+			resp = append(resp, 0xc0, 12, 0, 28, 0, 1, 0, 0, 0, 60, 0, 16)
+			resp = append(resp, net.ParseIP(ip6).To16()...)
+		case ok6:
+			// AAAA だけの名前（A は答えない）
 		case ok && qtype == 1:
 			binary.BigEndian.PutUint16(resp[6:], 1)
 			resp = append(resp, 0xc0, 12, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4)
@@ -286,7 +300,11 @@ func dnsServe(addr string) int {
 }
 
 func dig(arg string) int {
-	parts := strings.Split(arg, ":")
+	sep := ":"
+	if strings.Contains(arg, "\x00") { // dig6 から（IPv6 のアドレスはコロンを含む）
+		sep = "\x00"
+	}
+	parts := strings.Split(arg, sep)
 	if len(parts) != 4 {
 		return 2
 	}
@@ -330,6 +348,8 @@ func dig(arg string) int {
 		off += 10
 		if typ == 1 && rdlen == 4 && off+4 <= n {
 			answers = append(answers, net.IP(b[off:off+4]).String())
+		} else if typ == 28 && rdlen == 16 && off+16 <= n {
+			answers = append(answers, net.IP(b[off:off+16]).String())
 		} else {
 			answers = append(answers, fmt.Sprintf("type%d", typ))
 		}
@@ -337,6 +357,15 @@ func dig(arg string) int {
 	}
 	fmt.Printf("rcode=%d answers=%s\n", rcode, strings.Join(answers, ","))
 	return 0
+}
+
+// dig6 は「サーバー,名前,種類」（サーバーは IPv6 のアドレス）で問い合わせる。出力は dig と同じ。
+func dig6(arg string) int {
+	parts := strings.Split(arg, ",")
+	if len(parts) != 3 {
+		return 2
+	}
+	return dig(strings.Join([]string{parts[0], "53", parts[1], parts[2]}, "\x00"))
 }
 
 func udpEcho(addr string) int {

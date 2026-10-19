@@ -13,7 +13,9 @@
       22
     ],
     "trusted_routers": [],
-    "nd_probe_interval": "5m"
+    "nd_probe_interval": "5m",
+    "ipv6": false,
+    "ra_interval": "200s"
   },
   "dhcp": {
     "range": "192.168.10.100-192.168.10.199",

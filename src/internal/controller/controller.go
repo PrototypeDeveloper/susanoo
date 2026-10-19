@@ -568,8 +568,8 @@ func (c *Controller) isolationLocked() (map[netip.Addr]policy.IsolationLevel, ma
 		for _, h := range c.hosts {
 			if h.DeviceID == d.ID {
 				macs[h.MAC] = d.Isolation
-				if h.IP.IsValid() {
-					addrs[h.IP] = d.Isolation
+				for _, a := range h.addrs() {
+					addrs[a] = d.Isolation
 				}
 			}
 		}
@@ -577,8 +577,8 @@ func (c *Controller) isolationLocked() (map[netip.Addr]policy.IsolationLevel, ma
 	for _, h := range c.hosts {
 		if h.Isolation != "" {
 			macs[h.MAC] = h.Isolation
-			if h.IP.IsValid() {
-				addrs[h.IP] = h.Isolation
+			for _, a := range h.addrs() {
+				addrs[a] = h.Isolation
 			}
 		}
 	}

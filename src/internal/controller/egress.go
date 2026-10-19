@@ -191,7 +191,7 @@ func (c *Controller) deviceByAddrLocked(ip netip.Addr) string {
 		}
 	}
 	for _, h := range c.hosts {
-		if h.IP == ip && h.DeviceID != "" {
+		if h.hasAddr(ip) && h.DeviceID != "" {
 			return h.DeviceID
 		}
 	}
@@ -222,8 +222,8 @@ func (c *Controller) pushMembershipLocked(isolated map[netip.Addr]policy.Isolati
 			continue
 		}
 		m.MACs[h.MAC] = g
-		if h.IP.IsValid() {
-			m.IPs[h.IP] = g
+		for _, a := range h.addrs() {
+			m.IPs[a] = g // DNS の問い合わせ元のアドレスでグループを決めるため、IPv6 アドレスも渡す
 		}
 	}
 	for _, d := range c.devices {

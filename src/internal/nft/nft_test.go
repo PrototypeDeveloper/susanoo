@@ -259,9 +259,10 @@ func TestGWIsolationSetsScript(t *testing.T) {
 }
 
 var testEgress = Egress{
-	LAN: "lan0",
-	DNS: netip.MustParseAddr("10.77.0.1"),
-	DoH: []netip.Prefix{netip.MustParsePrefix("8.8.8.8/32"), netip.MustParsePrefix("2001:4860:4860::8888/128")},
+	LAN:  "lan0",
+	DNS:  netip.MustParseAddr("10.77.0.1"),
+	DNS6: netip.MustParseAddr("fd77::1"),
+	DoH:  []netip.Prefix{netip.MustParsePrefix("8.8.8.8/32"), netip.MustParsePrefix("2001:4860:4860::8888/128")},
 	Groups: []EgressGroup{
 		{Name: "default", Default: policy.EgressLearn, Deny: []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24"), netip.MustParsePrefix("203.0.113.128/25")}},
 		{
@@ -298,6 +299,7 @@ func TestEgressScript(t *testing.T) {
 		"\t\tip daddr @g1_a2_d4 meta l4proto { tcp, udp } th dport { 123 } accept\n",
 		"\t\tip6 daddr @g1_a2_d6 meta l4proto { tcp, udp } th dport { 123 } accept\n\t\tdrop\n\t}\n",
 		"\t\tiifname \"lan0\" ip daddr != 10.77.0.1 udp dport 53 dnat ip to 10.77.0.1:53\n",
+		"\t\tiifname \"lan0\" ip6 daddr != fd77::1 tcp dport 53 dnat ip6 to [fd77::1]:53\n",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("%q が含まれない\n%s", want, got)

@@ -257,33 +257,53 @@ func RouterSolicit(src netip.Addr, mac net.HardwareAddr) []byte {
 	return icmpv6(src, AllRouters, m)
 }
 
-// WithdrawRA は、src のルーターの広告を取り消すルーター広告を作る（ルーターの寿命を 0 にして既定の経路から外させ、
-// 知らせたネットワークの推奨の期限を 0 にして、新しい通信に使わせない。DNS サーバーの寿命も 0 にする）。
-// 不正なルーターを隔離したときに、GW が src を名乗って、すべての機器に送る。
-func WithdrawRA(src netip.Addr, mac net.HardwareAddr, prefixes []netip.Prefix, rdnss []netip.Addr) []byte {
-	m := make([]byte, 16, 64)
-	m[0] = NDRouterAdvert // 現在のホップの上限、印、寿命、到達可能時間、再送の間隔はすべて 0
+// RAOptions はルーター広告の中身。
+type RAOptions struct {
+	HopLimit       uint8          // 端末に使わせるホップの上限（0 なら指定しない）
+	RouterLifetime uint16         // 既定の経路として使ってよい秒数（0 なら既定の経路にしない）
+	Prefixes       []netip.Prefix // SLAAC でアドレスを作らせるネットワーク（オンリンクと自動設定の印を付ける）
+	Valid          uint32         // ネットワークの有効期限（秒）
+	Preferred      uint32         // ネットワークの推奨期限（秒）
+	RDNSS          []netip.Addr   // DNS サーバー（RFC 8106）
+	RDNSSLifetime  uint32
+}
+
+// BuildRA は、src（リンクローカルのアドレス）、リンク層のアドレス mac のルーターとして、すべての機器に送るルーター広告を作る。
+func BuildRA(src netip.Addr, mac net.HardwareAddr, o RAOptions) []byte {
+	m := make([]byte, 16, 128)
+	m[0], m[4] = NDRouterAdvert, o.HopLimit // 印、到達可能時間、再送の間隔は 0
+	binary.BigEndian.PutUint16(m[6:8], o.RouterLifetime)
 	if len(mac) == 6 {
 		m = append(m, 1, 1)
 		m = append(m, mac...)
 	}
-	for _, p := range prefixes {
-		o := make([]byte, 32)
-		o[0], o[1], o[2], o[3] = 3, 4, byte(p.Bits()), 0xc0 // オンリンクと自動設定の印。期限はどちらも 0
+	for _, p := range o.Prefixes {
+		opt := make([]byte, 32)
+		opt[0], opt[1], opt[2], opt[3] = 3, 4, byte(p.Bits()), 0xc0 // オンリンクと自動設定の印
+		binary.BigEndian.PutUint32(opt[4:8], o.Valid)
+		binary.BigEndian.PutUint32(opt[8:12], o.Preferred)
 		a := p.Masked().Addr().As16()
-		copy(o[16:], a[:])
-		m = append(m, o...)
+		copy(opt[16:], a[:])
+		m = append(m, opt...)
 	}
-	if len(rdnss) > 0 {
-		o := make([]byte, 8, 8+16*len(rdnss))
-		o[0], o[1] = 25, byte(1+2*len(rdnss)) // 寿命は 0
-		for _, a := range rdnss {
+	if len(o.RDNSS) > 0 {
+		opt := make([]byte, 8, 8+16*len(o.RDNSS))
+		opt[0], opt[1] = 25, byte(1+2*len(o.RDNSS))
+		binary.BigEndian.PutUint32(opt[4:8], o.RDNSSLifetime)
+		for _, a := range o.RDNSS {
 			b := a.As16()
-			o = append(o, b[:]...)
+			opt = append(opt, b[:]...)
 		}
-		m = append(m, o...)
+		m = append(m, opt...)
 	}
 	return icmpv6(src, AllNodes, m)
+}
+
+// WithdrawRA は、src のルーターの広告を取り消すルーター広告を作る（ルーターの寿命を 0 にして既定の経路から外させ、
+// 知らせたネットワークの期限を 0 にして、新しい通信に使わせない。DNS サーバーの寿命も 0 にする）。
+// 不正なルーターを隔離したときに、GW が src を名乗って、すべての機器に送る。
+func WithdrawRA(src netip.Addr, mac net.HardwareAddr, prefixes []netip.Prefix, rdnss []netip.Addr) []byte {
+	return BuildRA(src, mac, RAOptions{Prefixes: prefixes, RDNSS: rdnss})
 }
 
 // SolicitDHCPv6 は、src（GW のリンクローカルのアドレス）から DHCPv6 のサーバーを探す SOLICIT を作る。

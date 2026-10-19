@@ -3,12 +3,14 @@ package controller
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"net/netip"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"susanoo/internal/api"
 	"susanoo/internal/pki"
 	"susanoo/internal/pki/pkitest"
 	"susanoo/internal/policy"
@@ -136,5 +138,45 @@ func TestTrustedRouterAndRogueDHCPv6(t *testing.T) {
 	}
 	if !strings.Contains(eventsText(t, f.dir), "2001:db8:bad::10") {
 		t.Error("検知結果に割り当てようとしたアドレスがない")
+	}
+}
+
+// 機器の IPv6 アドレス（リンクローカルを除く）は、DNS の判断のグループと、GW の遮断と DNS の拒否に使う。
+// 隔離中か既定でないグループの機器のアドレスが増えたら、すぐに反映する。
+func TestIPv6MembershipAndIsolation(t *testing.T) {
+	f, eg := startEgress(t)
+	admin := f.peer(pki.RoleAdmin, "admin")
+	ula := netip.MustParseAddr("fd77::61")
+	f.ctrl.ObserveND(NDObservation{Frame: macPC6, Type: 135, Src: llPC6, Target: gwLinkLocal})
+	if status, body := admin.do(http.MethodPost, api.PathHosts+"/"+macPC6.String()+"/group", api.GroupRequest{Group: "strict"}); status != http.StatusOK {
+		t.Fatalf("グループの変更 = %d %s", status, body)
+	}
+	if m := eg.get(); m.MACs[macPC6.String()] != "strict" || len(m.IPs) != 0 {
+		t.Errorf("リンクローカルのアドレスだけの機器 = %+v", m)
+	}
+	f.ctrl.ObserveND(NDObservation{Frame: macPC6, Type: 136, Src: ula, Target: ula})
+	if m := eg.get(); m.IPs[ula] != "strict" {
+		t.Errorf("増えた IPv6 アドレスのグループ = %+v", m)
+	}
+	if status, _ := admin.do(http.MethodPost, api.PathHosts+"/"+macPC6.String()+"/isolate", nil); status != http.StatusOK {
+		t.Fatal("隔離できない")
+	}
+	if last := f.enf.last(); last.addrs[ula] == "" || last.macs[macPC6.String()] == "" {
+		t.Errorf("GW の遮断 = %+v", last)
+	}
+	if m := eg.get(); m.Isolated[ula] == "" {
+		t.Errorf("DNS の拒否 = %+v", m.Isolated)
+	}
+	ula2 := netip.MustParseAddr("fd77::6161")
+	f.ctrl.ObserveND(NDObservation{Frame: macPC6, Type: 135, Src: ula2, Target: gwLinkLocal})
+	if last := f.enf.last(); last.addrs[ula2] == "" {
+		t.Errorf("隔離中に増えたアドレスを遮断していない: %+v", last)
+	}
+	// IPv6 アドレスから機器を引ける（DNS と通信の記録の送信元）。
+	f.ctrl.mu.Lock()
+	h := f.ctrl.hostByIPLocked(ula2)
+	f.ctrl.mu.Unlock()
+	if h == nil || h.MAC != macPC6.String() {
+		t.Errorf("IPv6 アドレスから引いた機器 = %+v", h)
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -131,18 +132,41 @@ func Listen(addr netip.Addr, port uint16) (net.PacketConn, net.Listener, error) 
 
 // ServeConns は Listen で開いた待ち受けで問い合わせを受け付け、ctx が終わるまで応答する。pc と ln は閉じる。
 func (s *Server) ServeConns(ctx context.Context, pc net.PacketConn, ln net.Listener) error {
-	addr := pc.LocalAddr().String()
-	go func() { <-ctx.Done(); pc.Close(); ln.Close() }()
+	return s.ServeAll(ctx, []net.PacketConn{pc}, []net.Listener{ln})
+}
+
+// ServeAll は ServeConns と同じだが、複数のソケット（IPv4 と IPv6 のアドレスなど）で受け付ける。
+// どれかが止まったら、すべてを閉じて返る。
+func (s *Server) ServeAll(ctx context.Context, pcs []net.PacketConn, lns []net.Listener) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var addrs []string
+	for _, pc := range pcs {
+		addrs = append(addrs, pc.LocalAddr().String())
+	}
+	go func() {
+		<-ctx.Done()
+		for _, pc := range pcs {
+			pc.Close()
+		}
+		for _, ln := range lns {
+			ln.Close()
+		}
+	}()
 	defer func() {
 		for _, u := range s.cfg.Upstreams {
 			u.Close()
 		}
 	}()
-	s.log.Info("DNS リゾルバを起動しました", "アドレス", addr, "上流", len(s.cfg.Upstreams))
+	s.log.Info("DNS リゾルバを起動しました", "アドレス", strings.Join(addrs, "、"), "上流", len(s.cfg.Upstreams))
 
-	errc := make(chan error, 2)
-	go func() { errc <- s.serveUDP(ctx, pc) }()
-	go func() { errc <- s.serveTCP(ctx, ln) }()
+	errc := make(chan error, len(pcs)+len(lns))
+	for _, pc := range pcs {
+		go func() { errc <- s.serveUDP(ctx, pc) }()
+	}
+	for _, ln := range lns {
+		go func() { errc <- s.serveTCP(ctx, ln) }()
+	}
 	err := <-errc
 	if ctx.Err() != nil {
 		return ctx.Err()

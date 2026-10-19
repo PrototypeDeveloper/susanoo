@@ -138,6 +138,32 @@ func InterfaceAddrs6(name string) ([]netip.Addr, error) {
 	return out, nil
 }
 
+// InterfacePrefix6 は、インターフェース name の、リンクローカルでない最初の IPv6 アドレスと、そのネットワークを返す。
+// 権限は要らない。ルーター方式の IPv6（G1）で、LAN に知らせるネットワークと、GW のアドレスに使う。
+func InterfacePrefix6(name string) (netip.Addr, netip.Prefix, error) {
+	ifi, err := net.InterfaceByName(name)
+	if err != nil {
+		return netip.Addr{}, netip.Prefix{}, err
+	}
+	addrs, err := ifi.Addrs()
+	if err != nil {
+		return netip.Addr{}, netip.Prefix{}, err
+	}
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok || ipn.IP.To4() != nil {
+			continue
+		}
+		ip, ok := netip.AddrFromSlice(ipn.IP)
+		if !ok || ip.IsLinkLocalUnicast() || ip.IsLoopback() {
+			continue
+		}
+		bits, _ := ipn.Mask.Size()
+		return ip, netip.PrefixFrom(ip, bits).Masked(), nil
+	}
+	return netip.Addr{}, netip.Prefix{}, fmt.Errorf("gw: %s にリンクローカルでない IPv6 アドレスがありません", name)
+}
+
 // Addrs6Cache は、インターフェースの IPv6 アドレスを、間をおいて読み直しながら返す。
 type Addrs6Cache struct {
 	Name  string
@@ -468,6 +494,15 @@ func (l *LAN) ProbeIPv6() error {
 	}
 	l.mu.Unlock()
 	return errors.Join(l.send6(RouterSolicit(src, l.mac), AllRouters), l.send6(SolicitDHCPv6(src, l.mac, xid), AllDHCPv6Servers))
+}
+
+// Advertise は、GW を LAN のルーターとして知らせるルーター広告を、GW のリンクローカルのアドレスからすべての機器に送る。
+func (l *LAN) Advertise(o RAOptions) error {
+	src, err := l.linkLocal()
+	if err != nil {
+		return err
+	}
+	return l.send6(BuildRA(src, l.mac, o), AllNodes)
 }
 
 // WithdrawRA は、不正なルーター src（MAC アドレス mac）の広告を取り消すルーター広告を、src を名乗ってすべての機器に送る。
