@@ -2,7 +2,8 @@
 //
 // OS ごとに使える機能の差は Capabilities として申告し（C12）、CONTROLLER はそれを見て
 // 端末ごとに期待できる検知と対応を判断する。証拠の保全（C11）とプロセス単位の通信制御（C7）は、
-// それぞれ Collector と AppFirewall を満たす Platform だけが行う。
+// それぞれ Collector と AppFirewall を満たす Platform だけが行う。資源の上限（2l）と時刻の同期の確認は、
+// Resources と Clock を満たす Platform だけが行う。
 // GW の通信制御は Linux の nftables に固有のため、このインターフェースには含めない。
 package platform
 
@@ -10,6 +11,7 @@ import (
 	"context"
 	"net/netip"
 	"slices"
+	"time"
 
 	"susanoo/internal/event"
 	"susanoo/internal/policy"
@@ -98,6 +100,27 @@ type SnapshotLog struct {
 type Collector interface {
 	// Snapshot は今の端末の状態を集める。一部を集められなくても、集めた分を返す。
 	Snapshot(ctx context.Context) (*Snapshot, error)
+}
+
+// Usage は CLIENT の資源の使用量（2l）。
+type Usage struct {
+	CPU     time.Duration // 動いているプロセス（CLIENT と、その子）が使った CPU の時間の合計
+	Memory  int64         // 実メモリ（RSS）の合計（バイト）
+	Dropped uint64        // 監視を間引いている間に捨てたイベントの数（起動してから）
+}
+
+// Resources は CLIENT の資源の使用量を測り、上限を超えたときに監視を間引ける Platform（2l）。
+type Resources interface {
+	// Usage は今の資源の使用量を返す。
+	Usage() (Usage, error)
+	// SetThrottle は監視の間引きを始めるかやめる。間引いている間も、検知結果のイベントは捨てない。
+	SetThrottle(on bool)
+}
+
+// Clock は時刻の同期の状態を返せる Platform（2l）。
+type Clock interface {
+	// ClockSynchronized は、OS の時刻が NTP などで同期しているかを返す。
+	ClockSynchronized() (bool, error)
 }
 
 // Platform は OS の機能。実装は OS ごとに用意する。

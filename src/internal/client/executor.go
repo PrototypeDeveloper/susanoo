@@ -72,6 +72,10 @@ type LocalConfig struct {
 	Executable string               // 入れ替える実行ファイル。空なら今の実行ファイル
 	Version    string               // 今の版数。空ならビルドの版数
 	OnUpdate   func(version string) // 実行ファイルを入れ替えたら呼ぶ（CLIENT を起動し直す）
+	// 資源の上限（2l）。超えたら監視を間引く。0 ならその資源では判断しない（測って報告だけする）。
+	CPULimit         float64       // CPU の使用率の上限（1 つの CPU を使い切ると 100）
+	MemoryLimit      int64         // 実メモリの上限（バイト。執行部、解析部、その子の合計）
+	ResourceInterval time.Duration // 資源の使用量を測る間隔。既定 DefaultResourceInterval
 }
 
 // state は適用した指示。
@@ -108,6 +112,9 @@ type Local struct {
 	updating    bool
 	updFailed   map[string]time.Time // 入れ替えに失敗した版数と時刻
 	noKeyWarned bool
+
+	resMu sync.Mutex // 資源の使用量の記録を守る
+	res   resourceMonitor
 }
 
 var _ Executor = (*Local)(nil)
@@ -125,6 +132,9 @@ func NewLocal(cfg LocalConfig) (*Local, error) {
 	}
 	if cfg.CheckInterval <= 0 {
 		cfg.CheckInterval = DefaultHeartbeatInterval
+	}
+	if cfg.ResourceInterval <= 0 {
+		cfg.ResourceInterval = DefaultResourceInterval
 	}
 	id, leaf, err := identity(cfg.Cert.Certificate)
 	if err != nil {
@@ -156,6 +166,7 @@ func NewLocal(cfg LocalConfig) (*Local, error) {
 	return &Local{
 		cfg: cfg, log: cfg.Logger.With("端末", id.ID), id: id, leaf: leaf, key: key, signer: signer, verifier: verifier,
 		bootID: rand.Text(), hostname: hostname, state: st, chain: slices.Clone(cfg.Cert.Certificate), updFailed: map[string]time.Time{},
+		res: resourceMonitor{cpuLimit: cfg.CPULimit, memLimit: cfg.MemoryLimit},
 	}, nil
 }
 
@@ -231,6 +242,8 @@ func (l *Local) Heartbeat(context.Context) (sign.Envelope, error) {
 		AppControl:   l.appControlMode(),
 		Capabilities: l.cfg.Platform.Capabilities(),
 		Version:      l.currentVersion(),
+		Resources:    l.resourceUsage(),
+		ClockSynced:  l.clockSynced(),
 	})
 	if err != nil {
 		return sign.Envelope{}, err
@@ -381,12 +394,27 @@ func (l *Local) RenewCert(_ context.Context, chainDER [][]byte) error {
 }
 
 // Watch は Platform のイベントを送り、自己隔離のルールが消されていないかを定期的に確かめる（C10）。
-// Platform の監視が止まっても、確認は続ける。
+// 資源の使用量も測る（2l）。Platform の監視が止まっても、確認は続ける。
 func (l *Local) Watch(ctx context.Context, out chan<- event.Event) error {
 	errc := make(chan error, 1)
 	go func() { errc <- l.cfg.Platform.Watch(ctx, out) }()
 	t := time.NewTicker(l.cfg.CheckInterval)
 	defer t.Stop()
+	send := func(e *event.Event) {
+		if e != nil {
+			select {
+			case out <- *e:
+			case <-ctx.Done():
+			}
+		}
+	}
+	var measure <-chan time.Time
+	if _, ok := l.cfg.Platform.(platform.Resources); ok {
+		send(l.checkResources())
+		rt := time.NewTicker(l.cfg.ResourceInterval)
+		defer rt.Stop()
+		measure = rt.C
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -400,12 +428,9 @@ func (l *Local) Watch(ctx context.Context, out chan<- event.Event) error {
 				l.log.Error("検知の仕組みが止まりました。自己隔離の確認とハートビートは続けます", "エラー", err)
 			}
 		case <-t.C:
-			if e := l.checkTamper(ctx); e != nil {
-				select {
-				case out <- *e:
-				case <-ctx.Done():
-				}
-			}
+			send(l.checkTamper(ctx))
+		case <-measure:
+			send(l.checkResources())
 		}
 	}
 }

@@ -328,13 +328,20 @@ func printDevices(w io.Writer, list ...api.Device) {
 	tw := tabwriter.NewWriter(w, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "端末\tグループ\tアドレス\tMAC\t最終接続\t状態\t危険度\t隔離\t理由\t承認待ち\t自己隔離\t証明書の期限")
 	for _, d := range list {
-		state := "-"
-		if d.Away {
-			state = "不在"
+		var states []string
+		switch {
+		case !d.Revoked.IsZero():
+			states = append(states, "失効")
+		case d.Away:
+			states = append(states, "不在")
 		}
-		if !d.Revoked.IsZero() {
-			state = "失効"
+		if d.ClockSkewed {
+			states = append(states, "時刻のずれ "+clockOffset(d))
 		}
+		if d.Resources != nil && d.Resources.Throttled {
+			states = append(states, "監視を間引き中")
+		}
+		state := dash(strings.Join(states, "、"))
 		expiry := "-"
 		if !d.CertExpiry.IsZero() {
 			expiry = d.CertExpiry.Local().Format("2006-01-02")

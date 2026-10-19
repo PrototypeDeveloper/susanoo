@@ -29,6 +29,8 @@ var Defaults = []Rule{
 	{ID: "rogue-dhcpv6", Name: "不正な DHCPv6 サーバー", Finding: event.FindingTypeRogueDHCPv6, Mode: ModeEnforce, Score: 100},
 	{ID: "heartbeat-lost", Name: "ハートビートの途絶", Finding: event.FindingTypeHeartbeatLost, Mode: ModeEnforce, Score: 100},
 	{ID: "tamper", Name: "防御の仕組みの改ざん", Finding: event.FindingTypeTamper, Mode: ModeEnforce, Score: 0}, // 記録して警告する
+	{ID: "clock-skew", Name: "端末の時刻のずれ", Finding: event.FindingTypeClockSkew, Mode: ModeEnforce, Score: 0},
+	{ID: "resource-limit", Name: "CLIENT の資源の上限", Finding: event.FindingTypeResourceLimit, Mode: ModeEnforce, Score: 0},
 	// 振る舞いの検知（G6）は誤検知が出やすいため、試験運用から始める。
 	{ID: "beacon", Name: "周期的な通信", Finding: event.FindingTypeBeacon, Mode: ModeMonitor, Score: 40},
 	{ID: "large-upload", Name: "大量の送信", Finding: event.FindingTypeLargeUpload, Mode: ModeMonitor, Score: 50},

@@ -101,7 +101,7 @@ func TestConnMonitor(t *testing.T) {
 	}
 	defer c.Close()
 
-	m, err := newConnMonitor(time.Second, nil, nil)
+	m, err := newConnMonitor(time.Second, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

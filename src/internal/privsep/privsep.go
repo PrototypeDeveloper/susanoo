@@ -41,10 +41,11 @@ const noticeHello = "hello"
 
 // Hello は CLIENT の解析部が動くのに必要な情報。解析部は設定ファイルや鍵を読まない。
 type Hello struct {
-	Controller        string        `json:"controller"`         // CONTROLLER のアドレスとポート
-	CA                [][]byte      `json:"ca"`                 // 内部の認証局の証明書（DER）
-	Chain             [][]byte      `json:"chain"`              // 端末の証明書の連なり（DER）
-	HeartbeatInterval time.Duration `json:"heartbeat_interval"` // ハートビートの間隔
+	Controller        string        `json:"controller"`             // CONTROLLER のアドレスとポート
+	CA                [][]byte      `json:"ca"`                     // 内部の認証局の証明書（DER）
+	Chain             [][]byte      `json:"chain"`                  // 端末の証明書の連なり（DER）
+	HeartbeatInterval time.Duration `json:"heartbeat_interval"`     // ハートビートの間隔
+	MemoryLimit       int64         `json:"memory_limit,omitempty"` // 解析部の Go のメモリの回収の目安（バイト。0 なら決めない。2l）
 }
 
 // CertPool は認証局の証明書を、検証に使う形にする。

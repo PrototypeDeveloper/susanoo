@@ -30,7 +30,7 @@ func (c *Controller) getStatus(w http.ResponseWriter, _ *http.Request, _ pki.Ide
 	now := c.now()
 	c.mu.Lock()
 	st := api.Status{Version: version.Version, StartedAt: c.started, Response: c.pol.Response, CertExpiry: c.certExpiry(), IssuerExpiry: c.issuerExpiry(),
-		EnrollCodes: c.activeEnrollCodes(now)}
+		EnrollCodes: c.activeEnrollCodes(now), ClockSynced: c.clockSynced(), MaxClockSkew: c.cfg.MaxClockSkew.String()}
 	info := c.policyInfoLocked()
 	st.Policy, st.Canary = info.Current, info.Canary
 	for _, d := range c.devices {
@@ -52,6 +52,13 @@ func (c *Controller) getStatus(w http.ResponseWriter, _ *http.Request, _ pki.Ide
 		}
 		if !d.CertExpiry.IsZero() && d.CertExpiry.Sub(now) < certWarning && d.Revoked.IsZero() {
 			st.ExpiringCerts = append(st.ExpiringCerts, c.deviceViewLocked(d))
+		}
+		if d.ClockSkewed && d.Revoked.IsZero() {
+			st.ClockSkewed = append(st.ClockSkewed, c.deviceViewLocked(d))
+		}
+		// 資源の使用量は接続している端末のものだけを見る（止まった端末の報告は古い）。
+		if d.Resources != nil && d.Resources.Throttled && !d.Lost && now.Sub(d.LastSeen) <= c.cfg.HeartbeatTimeout {
+			st.Throttled = append(st.Throttled, c.deviceViewLocked(d))
 		}
 	}
 	for _, h := range c.hosts {
@@ -75,6 +82,9 @@ func (c *Controller) getStatus(w http.ResponseWriter, _ *http.Request, _ pki.Ide
 	st.Rules = c.rulesVersion()
 	st.Intel = c.intelSummary()
 	slices.SortFunc(st.ExpiringCerts, func(a, b api.Device) int { return a.CertExpiry.Compare(b.CertExpiry) })
+	for _, list := range [][]api.Device{st.ClockSkewed, st.Throttled} {
+		slices.SortFunc(list, func(a, b api.Device) int { return strings.Compare(a.ID, b.ID) })
+	}
 
 	classFilter := []byte(`"class_uid":` + strconv.Itoa(int(event.ClassDetectionFinding)) + `,`)
 	if lines, err := c.events.Query(time.Time{}, recentFindings, func(line []byte) bool { return bytes.Contains(line, classFilter) }); err == nil {

@@ -49,6 +49,12 @@ type device struct {
 	Software string `json:"software,omitempty"` // CLIENT が報告した版数
 	OS       string `json:"os,omitempty"`       // CLIENT が報告した OS と CPU（リリースのファイルを選ぶ）
 	Arch     string `json:"arch,omitempty"`
+
+	Resources   *api.ResourceUsage `json:"resources,omitempty"`    // CLIENT が報告した資源の使用量（2l）
+	ClockOffset time.Duration      `json:"clock_offset,omitempty"` // 端末の時刻のずれ（直近のハートビートの中央値）
+	ClockSkewed bool               `json:"clock_skewed,omitempty"` // 時刻のずれが上限を超えている
+	ClockSynced *bool              `json:"clock_synced,omitempty"` // CLIENT が報告した時刻の同期の状態
+	clock       []time.Duration    // 直近のハートビートの時刻のずれ（保存しない）
 }
 
 func (d *device) view(macs []string) api.Device {
@@ -70,6 +76,14 @@ func (d *device) view(macs []string) api.Device {
 		CertExpiry: d.CertExpiry,
 		Revoked:    d.Revoked,
 		AppControl: d.AppControl,
+
+		ClockOffset: d.ClockOffset.Round(100 * time.Millisecond).Seconds(),
+		ClockSkewed: d.ClockSkewed,
+		ClockSynced: d.ClockSynced,
+	}
+	if d.Resources != nil {
+		r := *d.Resources
+		v.Resources = &r
 	}
 	if v.Group == "" {
 		v.Group = policy.DefaultGroup

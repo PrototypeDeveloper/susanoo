@@ -64,25 +64,27 @@ type LAN interface {
 
 // Config は CONTROLLER の設定。
 type Config struct {
-	Dir              string            // 台帳、監査ログ、イベントを置くディレクトリ
-	CA               *x509.CertPool    // 内部の認証局
-	Cert             tls.Certificate   // CONTROLLER のサーバー証明書
-	Signer           *sign.Signer      // CLIENT への指示に署名する鍵
-	Policy           *policy.Policy    // ポリシー
-	Enforcer         Enforcer          // GW の遮断。nil なら GW では遮断しない
-	LAN              LAN               // GW の LAN。nil なら在席の確認となりすましの検知をしない
-	Issuer           Issuer            // 端末の証明書の更新と登録に使う。nil なら更新も登録もしない
-	Root             *x509.Certificate // 内部の認証局（ルート）の証明書。登録した端末に渡す。nil なら登録しない
-	TrustedRouters   []string          // LAN のルーターとして認める機器の MAC アドレス（その RA と DHCPv6 を不正としない）
-	Canary           *policy.Policy    // 先行適用の版（なければ nil）。Policy は今の版
-	Policies         PolicyManager     // ポリシーの配布に使う。nil なら配布しない
-	Egress           Egress            // 外部通信の制御。nil なら端末のグループを渡さない
-	RulesKey         ed25519.PublicKey // 検知ルールの署名を確かめる公開鍵（ポリシーと同じ鍵）。nil なら配布を受け付けない（既定のルールだけ）
-	Intel            IntelManager      // 脅威情報の配布に使う。nil なら配布しない
-	Notifier         *notify.Notifier  // 管理者への通知（M7）。nil なら通知しない
-	IntelSet         *intel.Set        // 執行部が使っている脅威情報（なければ nil）
-	HeartbeatTimeout time.Duration     // これより長くハートビートがなければ隔離する
-	MaxEventBytes    int64             // 保存するイベントの合計の上限
+	Dir              string               // 台帳、監査ログ、イベントを置くディレクトリ
+	CA               *x509.CertPool       // 内部の認証局
+	Cert             tls.Certificate      // CONTROLLER のサーバー証明書
+	Signer           *sign.Signer         // CLIENT への指示に署名する鍵
+	Policy           *policy.Policy       // ポリシー
+	Enforcer         Enforcer             // GW の遮断。nil なら GW では遮断しない
+	LAN              LAN                  // GW の LAN。nil なら在席の確認となりすましの検知をしない
+	Issuer           Issuer               // 端末の証明書の更新と登録に使う。nil なら更新も登録もしない
+	Root             *x509.Certificate    // 内部の認証局（ルート）の証明書。登録した端末に渡す。nil なら登録しない
+	TrustedRouters   []string             // LAN のルーターとして認める機器の MAC アドレス（その RA と DHCPv6 を不正としない）
+	Canary           *policy.Policy       // 先行適用の版（なければ nil）。Policy は今の版
+	Policies         PolicyManager        // ポリシーの配布に使う。nil なら配布しない
+	Egress           Egress               // 外部通信の制御。nil なら端末のグループを渡さない
+	RulesKey         ed25519.PublicKey    // 検知ルールの署名を確かめる公開鍵（ポリシーと同じ鍵）。nil なら配布を受け付けない（既定のルールだけ）
+	Intel            IntelManager         // 脅威情報の配布に使う。nil なら配布しない
+	Notifier         *notify.Notifier     // 管理者への通知（M7）。nil なら通知しない
+	IntelSet         *intel.Set           // 執行部が使っている脅威情報（なければ nil）
+	HeartbeatTimeout time.Duration        // これより長くハートビートがなければ隔離する
+	MaxClockSkew     time.Duration        // 端末の時刻のずれの上限。既定 DefaultMaxClockSkew
+	ClockSynced      func() (bool, error) // この機器の時刻が同期しているかを返す。nil なら分からないものとする
+	MaxEventBytes    int64                // 保存するイベントの合計の上限
 	Logger           *slog.Logger
 	Now              func() time.Time
 }
@@ -193,6 +195,9 @@ func New(cfg Config) (*Controller, error) {
 	if cfg.MaxEventBytes <= 0 {
 		cfg.MaxEventBytes = DefaultMaxEventBytes
 	}
+	if cfg.MaxClockSkew <= 0 {
+		cfg.MaxClockSkew = DefaultMaxClockSkew
+	}
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return nil, err
 	}
@@ -272,6 +277,7 @@ func New(cfg Config) (*Controller, error) {
 		al.Close()
 		return nil, err
 	}
+	c.warnClock()
 	return c, nil
 }
 

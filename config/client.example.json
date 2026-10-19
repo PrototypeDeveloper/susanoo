@@ -71,5 +71,9 @@
     {"name": "codex", "match": ["codex", "@openai/codex/"]}
   ],
   "privilege_separation": true,
-  "analyzer_user": "nobody"
+  "analyzer_user": "nobody",
+  "resources": {
+    "cpu_percent": 10,
+    "memory_mb": 256
+  }
 }

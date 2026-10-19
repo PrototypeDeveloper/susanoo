@@ -135,6 +135,7 @@ func (c *Controller) heartbeat(w http.ResponseWriter, r *http.Request, id pki.Id
 
 	c.mu.Lock()
 	d := c.ensureLocked(id.ID, addr)
+	now := c.now()
 	if hb.BootID == d.BootID && hb.Counter <= d.Counter {
 		c.mu.Unlock()
 		writeError(w, http.StatusConflict, "古いハートビートです")
@@ -146,6 +147,8 @@ func (c *Controller) heartbeat(w http.ResponseWriter, r *http.Request, id pki.Id
 	d.Applied, d.AppliedVersion = hb.Isolation, hb.Applied
 	d.AppControl = hb.AppControl
 	c.recordSoftwareLocked(d, hb)
+	c.recordResourcesLocked(d, hb)
+	skew := c.recordClockLocked(d, hb, now)
 	cert := r.TLS.PeerCertificates[0]
 	d.CertExpiry = cert.NotAfter
 	if !d.Revoked.IsZero() && pki.IssuedAt(cert).After(d.Revoked) {
@@ -154,6 +157,9 @@ func (c *Controller) heartbeat(w http.ResponseWriter, r *http.Request, id pki.Id
 	c.touchLocked(d, addr)
 	cmd, err := c.commandLocked(d)
 	c.mu.Unlock()
+	if skew != nil {
+		c.observe(skew, subject{device: id.ID})
+	}
 	respond(w, cmd, err)
 }
 

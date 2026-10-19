@@ -99,6 +99,13 @@ func ctlStatus(args []string, stdout, stderr io.Writer) int {
 		}
 		fmt.Fprintf(tw, "学習モード\t%s（学習した名前 %d、遮断 %d）: %s\n", lg.Group, lg.Learned, lg.Blocked, state)
 	}
+	switch s := st.ClockSynced; {
+	case s == nil:
+	case *s:
+		fmt.Fprintf(tw, "時刻\t同期しています（端末の時刻のずれの上限 %s）\n", st.MaxClockSkew)
+	default:
+		fmt.Fprintf(tw, "時刻\t同期していません（端末の時刻のずれはこの機器の時刻と比べるので、NTP などで合わせてください）\n")
+	}
 	if st.EnrollCodes > 0 {
 		fmt.Fprintf(tw, "登録コード\t%d 個（有効な間は、証明書なしの接続を登録の窓口だけ受け付けます。ctl enroll list で確かめられます）\n", st.EnrollCodes)
 	}
@@ -142,11 +149,46 @@ func ctlStatus(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "  %s\t%s\n", d.ID, d.CertExpiry.Local().Format("2006-01-02 15:04"))
 		}
 	}
+	if len(st.ClockSkewed) > 0 {
+		fmt.Fprintf(stdout, "\n時刻のずれが上限（%s）を超えている端末:\n", st.MaxClockSkew)
+		for _, d := range st.ClockSkewed {
+			fmt.Fprintf(stdout, "  %s\t%s\n", d.ID, clockOffset(d))
+		}
+	}
+	if len(st.Throttled) > 0 {
+		fmt.Fprintln(stdout, "\n資源の上限を超えて監視を間引いている端末:")
+		for _, d := range st.Throttled {
+			fmt.Fprintf(stdout, "  %s\t%s\n", d.ID, resourceUsage(d.Resources))
+		}
+	}
 	if len(st.RecentFindings) > 0 {
 		fmt.Fprintln(stdout, "\n最近の検知:")
 		printEvents(stdout, st.RecentFindings)
 	}
 	return exitOK
+}
+
+// clockOffset は端末の時刻のずれを「+300.0 秒（進んでいる）」の形にする。
+func clockOffset(d api.Device) string {
+	switch {
+	case d.ClockOffset > 0:
+		return fmt.Sprintf("+%.1f 秒（進んでいる）", d.ClockOffset)
+	case d.ClockOffset < 0:
+		return fmt.Sprintf("%.1f 秒（遅れている）", d.ClockOffset)
+	}
+	return "0 秒"
+}
+
+// resourceUsage は CLIENT の資源の使用量を「CPU 3.2%、メモリ 41 MiB」の形にする。
+func resourceUsage(r *api.ResourceUsage) string {
+	if r == nil {
+		return "-"
+	}
+	s := fmt.Sprintf("CPU %.1f%%、メモリ %d MiB", r.CPUPercent, r.MemoryBytes>>20)
+	if r.Dropped > 0 {
+		s += fmt.Sprintf("、間引いたイベント %d", r.Dropped)
+	}
+	return s
 }
 
 func ctlEvents(args []string, stdout, stderr io.Writer) int {

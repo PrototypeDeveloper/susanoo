@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -47,7 +48,43 @@ type clientConfig struct {
 	AppControl        *bool             `json:"app_control"`          // プロセス単位の通信の制御（C7。ルールはポリシーのグループの apps）。既定 true
 	Separation        *bool             `json:"privilege_separation"` // 権限の分離（C10）。既定 true（root で動かすとき）
 	User              string            `json:"analyzer_user"`        // 解析部を動かす利用者。既定 nobody
+	Resources         *resourceConfig   `json:"resources"`            // 資源の上限（2l）
 }
+
+// resourceConfig は CLIENT の資源の上限。超えたら監視を間引き、検知結果を送る。CPU とメモリを確実に抑えるには、
+// systemd のユニットの CPUQuota と MemoryMax も使う（このプロセスの上限は、間引いて使用量を下げるためのもの）。
+type resourceConfig struct {
+	CPUPercent int `json:"cpu_percent"` // CPU の使用率の上限（1 つの CPU を使い切ると 100）。既定 10
+	MemoryMB   int `json:"memory_mb"`   // 実メモリの上限（MiB。執行部、解析部、その子の合計）。既定 256
+}
+
+// 資源の上限の既定値と範囲。
+const (
+	defaultCPUPercent = 10
+	defaultMemoryMB   = 256
+	maxCPUPercent     = 1000
+	minMemoryMB       = 8
+	maxMemoryMB       = 65536
+	minGoMemoryLimit  = 32 << 20 // Go のメモリの回収の目安の下限（小さすぎると回収ばかりして CPU を使う）
+)
+
+// resourceLimits は設定ファイルの resources を、CPU の使用率の上限とメモリの上限（バイト）にする。
+func resourceLimits(r *resourceConfig) (float64, int64, error) {
+	cpu, mem := defaultCPUPercent, defaultMemoryMB
+	if r != nil {
+		cpu, mem = cmp.Or(r.CPUPercent, cpu), cmp.Or(r.MemoryMB, mem)
+	}
+	if cpu < 1 || cpu > maxCPUPercent {
+		return 0, 0, fmt.Errorf("resources.cpu_percent は 1〜%d で書いてください", maxCPUPercent)
+	}
+	if mem < minMemoryMB || mem > maxMemoryMB {
+		return 0, 0, fmt.Errorf("resources.memory_mb は %d〜%d で書いてください", minMemoryMB, maxMemoryMB)
+	}
+	return float64(cpu), int64(mem) << 20, nil
+}
+
+// goMemoryLimit は、メモリの上限から、執行部と解析部のそれぞれの Go のメモリの回収の目安を決める（上限の半分）。
+func goMemoryLimit(limit int64) int64 { return max(limit/2, minGoMemoryLimit) }
 
 // defaultAnalyzerUser は解析部を動かす既定の利用者。専用の利用者（susanoo など）を作って指定するのが望ましい。
 const defaultAnalyzerUser = "nobody"
@@ -171,6 +208,11 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	cpuLimit, memLimit, err := resourceLimits(cfg.Resources)
+	if err != nil {
+		return fail(stderr, err)
+	}
+	debug.SetMemoryLimit(goMemoryLimit(memLimit))
 	pcfg := linux.Config{
 		Logons:        logons,
 		Tokens:        tokens,
@@ -215,6 +257,8 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 		CheckInterval: interval,
 		Platform:      p,
 		Logger:        log,
+		CPULimit:      cpuLimit,
+		MemoryLimit:   memLimit,
 	})
 	if err != nil {
 		return fail(stderr, err)
@@ -223,7 +267,8 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 	local.Restore(ctx)
 
 	if separate {
-		hello := privsep.Hello{Controller: addr.String(), CA: [][]byte{ca.Raw}, Chain: cert.Certificate, HeartbeatInterval: interval}
+		hello := privsep.Hello{Controller: addr.String(), CA: [][]byte{ca.Raw}, Chain: cert.Certificate, HeartbeatInterval: interval,
+			MemoryLimit: goMemoryLimit(memLimit)}
 		err = runExecutor(ctx, local, hello, cmp.Or(cfg.User, defaultAnalyzerUser), log)
 	} else {
 		var agent *client.Agent
@@ -297,6 +342,9 @@ func runAnalyzer(stderr io.Writer) int {
 	remote, hello, err := privsep.Dial(f, log)
 	if err != nil {
 		return fail(stderr, err)
+	}
+	if hello.MemoryLimit > 0 {
+		debug.SetMemoryLimit(hello.MemoryLimit)
 	}
 	addr, err := netip.ParseAddrPort(hello.Controller)
 	if err != nil {

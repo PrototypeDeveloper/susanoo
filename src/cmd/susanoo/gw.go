@@ -37,6 +37,7 @@ import (
 	"susanoo/internal/nft"
 	"susanoo/internal/notify"
 	"susanoo/internal/pki"
+	"susanoo/internal/platform/linux"
 	"susanoo/internal/policy"
 	"susanoo/internal/privsep"
 	"susanoo/internal/sign"
@@ -49,6 +50,7 @@ type gwConfig struct {
 	StateDir         string          `json:"state_dir"`            // 台帳、監査ログ、イベントの保存先
 	Policy           string          `json:"policy"`               // ポリシーのファイル
 	HeartbeatTimeout config.Duration `json:"heartbeat_timeout"`    // 既定 30s
+	MaxClockSkew     config.Duration `json:"max_clock_skew"`       // 端末の時刻のずれの上限。既定 2m
 	NFT              string          `json:"nft"`                  // nft コマンドの場所。既定 /usr/sbin/nft
 	Enforce          *bool           `json:"enforce"`              // false なら GW で遮断しない。既定 true
 	Router           *routerConfig   `json:"router"`               // ルーター方式（G1）。省略すると転送と NAT を設定しない
@@ -1291,6 +1293,8 @@ func (c *gwController) run(ctx context.Context, started func(*controller.Control
 		Intel:            c.intel,
 		IntelSet:         c.intelSet,
 		HeartbeatTimeout: c.cfg.HeartbeatTimeout.Or(controller.DefaultHeartbeatTimeout),
+		MaxClockSkew:     c.cfg.MaxClockSkew.Or(controller.DefaultMaxClockSkew),
+		ClockSynced:      linux.ClockSynchronized,
 		Logger:           c.log,
 	}
 	if c.lan != nil {

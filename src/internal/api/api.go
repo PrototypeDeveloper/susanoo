@@ -126,7 +126,17 @@ type Heartbeat struct {
 	Isolation    policy.IsolationLevel `json:"isolation,omitempty"`   // 今の自己隔離の状態（空なら隔離していない）
 	AppControl   policy.AppMode        `json:"app_control,omitempty"` // 効いているプロセス単位の通信の制御の扱い（C7。空なら効いていない）
 	Capabilities platform.Capabilities `json:"capabilities"`
-	Version      string                `json:"version,omitempty"` // CLIENT の版数（リリースの配布に使う）
+	Version      string                `json:"version,omitempty"`      // CLIENT の版数（リリースの配布に使う）
+	Resources    *ResourceUsage        `json:"resources,omitempty"`    // CLIENT の資源の使用量（測れない端末では nil）
+	ClockSynced  *bool                 `json:"clock_synced,omitempty"` // 端末の時刻が NTP などで同期しているか（分からなければ nil）
+}
+
+// ResourceUsage は CLIENT の資源の使用量（2l）。
+type ResourceUsage struct {
+	CPUPercent  float64 `json:"cpu_percent"`         // 直近の CPU の使用率（1 つの CPU を使い切ると 100）
+	MemoryBytes int64   `json:"memory_bytes"`        // 実メモリの使用量（CLIENT の執行部、解析部、その子の合計）
+	Throttled   bool    `json:"throttled,omitempty"` // 上限を超えたため、監視を間引いている
+	Dropped     uint64  `json:"dropped,omitempty"`   // 間引いている間に捨てたイベントの数（起動してから）
 }
 
 // EventBatch は CLIENT が送るイベントのまとまり。
@@ -397,24 +407,28 @@ type NotifyStatus struct {
 
 // Device は ctl に返す端末の状態。
 type Device struct {
-	Software   string                `json:"software,omitempty"` // CLIENT の版数
-	ID         string                `json:"id"`
-	Group      string                `json:"group"`
-	Addr       string                `json:"addr,omitempty"`
-	Hostname   string                `json:"hostname,omitempty"`
-	MACs       []string              `json:"macs,omitempty"` // 結び付いた LAN の機器
-	LastSeen   time.Time             `json:"last_seen"`
-	Isolation  policy.IsolationLevel `json:"isolation,omitempty"`   // 指示している隔離
-	Applied    policy.IsolationLevel `json:"applied,omitempty"`     // CLIENT が報告した自己隔離の状態
-	Reason     string                `json:"reason,omitempty"`      // 隔離の理由
-	Since      time.Time             `json:"since,omitzero"`        // 隔離した時刻
-	Pending    string                `json:"pending,omitempty"`     // 承認待ちの隔離の理由
-	Away       bool                  `json:"away,omitempty"`        // ハートビートが途絶え、LAN にもいない（不在）
-	Features   []platform.Capability `json:"features,omitempty"`    // CLIENT が申告した機能
-	CertExpiry time.Time             `json:"cert_expiry,omitzero"`  // 端末が最後に示した証明書の有効期限
-	Revoked    time.Time             `json:"revoked,omitzero"`      // 証明書を失効させた時刻（それより前に発行した証明書は使えない）
-	Risk       int                   `json:"risk,omitempty"`        // 危険度（M5）
-	AppControl policy.AppMode        `json:"app_control,omitempty"` // CLIENT が報告した、効いているプロセス単位の通信の制御の扱い（C7）
+	Software    string                `json:"software,omitempty"` // CLIENT の版数
+	ID          string                `json:"id"`
+	Group       string                `json:"group"`
+	Addr        string                `json:"addr,omitempty"`
+	Hostname    string                `json:"hostname,omitempty"`
+	MACs        []string              `json:"macs,omitempty"` // 結び付いた LAN の機器
+	LastSeen    time.Time             `json:"last_seen"`
+	Isolation   policy.IsolationLevel `json:"isolation,omitempty"`    // 指示している隔離
+	Applied     policy.IsolationLevel `json:"applied,omitempty"`      // CLIENT が報告した自己隔離の状態
+	Reason      string                `json:"reason,omitempty"`       // 隔離の理由
+	Since       time.Time             `json:"since,omitzero"`         // 隔離した時刻
+	Pending     string                `json:"pending,omitempty"`      // 承認待ちの隔離の理由
+	Away        bool                  `json:"away,omitempty"`         // ハートビートが途絶え、LAN にもいない（不在）
+	Features    []platform.Capability `json:"features,omitempty"`     // CLIENT が申告した機能
+	CertExpiry  time.Time             `json:"cert_expiry,omitzero"`   // 端末が最後に示した証明書の有効期限
+	Revoked     time.Time             `json:"revoked,omitzero"`       // 証明書を失効させた時刻（それより前に発行した証明書は使えない）
+	Risk        int                   `json:"risk,omitempty"`         // 危険度（M5）
+	AppControl  policy.AppMode        `json:"app_control,omitempty"`  // CLIENT が報告した、効いているプロセス単位の通信の制御の扱い（C7）
+	Resources   *ResourceUsage        `json:"resources,omitempty"`    // CLIENT が報告した資源の使用量
+	ClockOffset float64               `json:"clock_offset,omitempty"` // 端末の時刻の CONTROLLER とのずれ（秒。進んでいれば正）
+	ClockSkewed bool                  `json:"clock_skewed,omitempty"` // 時刻のずれが上限を超えている
+	ClockSynced *bool                 `json:"clock_synced,omitempty"` // 端末が報告した時刻の同期の状態
 }
 
 // CertificateResponse は更新した証明書。
@@ -516,6 +530,10 @@ type Status struct {
 	Incidents      IncidentCounts  `json:"incidents"`                 // 開いているインシデント（M9）
 	Learning       []LearningGroup `json:"learning,omitempty"`        // 学習モードのグループ（G2）
 	EnrollCodes    int             `json:"enroll_codes,omitempty"`    // 有効な登録コードの数（M1。ある間は証明書なしの接続を登録の窓口だけ受け付ける）
+	ClockSynced    *bool           `json:"clock_synced,omitempty"`    // CONTROLLER の機器の時刻が同期しているか（分からなければ nil）
+	MaxClockSkew   string          `json:"max_clock_skew,omitempty"`  // 端末の時刻のずれの上限
+	ClockSkewed    []Device        `json:"clock_skewed,omitempty"`    // 時刻のずれが上限を超えている端末
+	Throttled      []Device        `json:"throttled,omitempty"`       // 資源の上限を超えて監視を間引いている端末
 }
 
 // RulesPush は署名付きの検知ルールの配布（M3）。

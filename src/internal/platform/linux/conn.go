@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -156,6 +157,7 @@ type connMonitor struct {
 	self     int
 	loopback bool // 試験用。ループバックの通信も記録する
 	limiter  *limiter
+	throttle *atomic.Bool // 真の間は、一覧を取る間隔を throttleConnFactor 倍にする（2l）
 	procs    *procCache
 	agents   *agentMatcher
 	known    map[uint32]bool // 記録済みのソケット
@@ -163,14 +165,17 @@ type connMonitor struct {
 	owners   map[uint32]int
 }
 
-func newConnMonitor(interval time.Duration, procs *procCache, agents *agentMatcher) (*connMonitor, error) {
+func newConnMonitor(interval time.Duration, procs *procCache, agents *agentMatcher, throttle *atomic.Bool) (*connMonitor, error) {
 	if _, err := dumpSockets(syscall.AF_INET, syscall.IPPROTO_TCP, 1<<tcpListen); err != nil {
 		return nil, fmt.Errorf("sock_diag: %w", err)
 	}
 	if interval <= 0 {
 		interval = DefaultConnPoll
 	}
-	return &connMonitor{interval: interval, self: os.Getpid(), limiter: newLimiter(50, 200), procs: procs, agents: agents,
+	if throttle == nil {
+		throttle = new(atomic.Bool)
+	}
+	return &connMonitor{interval: interval, self: os.Getpid(), limiter: newLimiter(50, 200), throttle: throttle, procs: procs, agents: agents,
 		known: map[uint32]bool{}, recent: map[connKey]time.Time{}, owners: map[uint32]int{}}, nil
 }
 
@@ -179,8 +184,10 @@ func (m *connMonitor) close() error { return nil }
 func (m *connMonitor) run(ctx context.Context, emit func(*event.Event)) error {
 	t := time.NewTicker(m.interval)
 	defer t.Stop()
-	for {
-		m.poll(time.Now(), emit)
+	for n := 0; ; n++ {
+		if !m.throttle.Load() || n%throttleConnFactor == 0 {
+			m.poll(time.Now(), emit)
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

@@ -24,6 +24,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -94,6 +95,10 @@ type Platform struct {
 	extra    chan *event.Event // 監視の仕組みの外から出る検知結果（プロセス単位の通信の制御）
 	hostname string
 	self     int
+
+	throttled atomic.Bool   // 資源の上限を超えて、監視を間引いている（2l）
+	thinner   *limiter      // 間引いている間に通すイベントの数
+	dropped   atomic.Uint64 // 間引いている間に捨てたイベントの数
 }
 
 var _ platform.Platform = (*Platform)(nil)
@@ -110,7 +115,7 @@ func New(cfg Config) *Platform {
 		cfg.Agents = DefaultAgents()
 	}
 	p := &Platform{cfg: cfg, self: os.Getpid(), sources: map[platform.Capability]func() (source, error){}, procs: newProcCache(), agents: newAgentMatcher(cfg.Agents),
-		extra: make(chan *event.Event, 256)}
+		extra: make(chan *event.Event, 256), thinner: newLimiter(throttleRate, throttleBurst)}
 	p.hostname, _ = os.Hostname()
 	p.caps = platform.Capabilities{OS: runtime.GOOS, Arch: runtime.GOARCH, Kernel: kernelRelease()}
 
@@ -135,7 +140,7 @@ func New(cfg Config) *Platform {
 		open    func() (source, error)
 	}{
 		{cfg.ProcessEvents, platform.CapProcessEvents, "プロセスの監視", func() (source, error) { return newExecMonitor(p.procs, p.agents, cfg.Logger) }},
-		{cfg.NetworkEvents, platform.CapNetworkEvents, "通信の監視", func() (source, error) { return newConnMonitor(cfg.ConnPoll, p.procs, p.agents) }},
+		{cfg.NetworkEvents, platform.CapNetworkEvents, "通信の監視", func() (source, error) { return newConnMonitor(cfg.ConnPoll, p.procs, p.agents, &p.throttled) }},
 		{cfg.Files.enabled(), platform.CapFileEvents, "ファイルの監視", func() (source, error) { return newFileMonitor(cfg.Files, p.procs, p.agents, cfg.Logger) }},
 		{cfg.KernelModules, platform.CapKernelModules, "カーネルモジュールの監視", func() (source, error) { return newModuleMonitor(cfg.ModulePoll) }},
 		{cfg.Logons.Enabled, platform.CapLogons, "ログオンの記録", func() (source, error) { return newLogonMonitor(cfg.Logons, cfg.Logger) }},
@@ -194,6 +199,9 @@ func (p *Platform) Capabilities() platform.Capabilities { return p.caps }
 // 途中で止まった監視はログに残し、ほかの監視は続ける。
 func (p *Platform) Watch(ctx context.Context, out chan<- event.Event) error {
 	emit := func(e *event.Event) {
+		if p.thin(e) {
+			return
+		}
 		if e.Device == nil {
 			e.Device = &event.Device{Hostname: p.hostname}
 		}

@@ -78,6 +78,14 @@ type device struct {
 	Revoked    time.Time `json:"revoked"`
 	AppControl string    `json:"app_control"`
 	Software   string    `json:"software"`
+	Resources  *struct {
+		CPUPercent  float64 `json:"cpu_percent"`
+		MemoryBytes int64   `json:"memory_bytes"`
+		Throttled   bool    `json:"throttled"`
+	} `json:"resources"`
+	ClockOffset float64 `json:"clock_offset"`
+	ClockSkewed bool    `json:"clock_skewed"`
+	ClockSynced *bool   `json:"clock_synced"`
 }
 
 type host struct {
