@@ -179,6 +179,7 @@ func (c *Controller) applyPolicyStateLocked(st PolicyState) error {
 		}
 	}
 	c.pol, c.canaryPol = cur, canary
+	c.syncLearningLocked()
 	for _, p := range []*policy.Policy{cur, canary} {
 		if p != nil {
 			if err := c.saveCopy(p); err != nil {

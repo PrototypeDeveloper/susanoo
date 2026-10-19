@@ -43,7 +43,8 @@ const ctlUsage = `使い方: susanoo ctl <操作> [オプション]
   rules    検知ルールを署名して配布する、版を一覧する、過去の版に戻す、当てはまった回数を表示する（susanoo ctl rules で説明を表示）
   intel    脅威情報の一覧のファイルを取り込んで署名して配布する、一覧を消す、照合する（susanoo ctl intel で説明を表示）
   group    端末か機器のグループを変える（例: susanoo ctl group pc-001 server）
-  learned  学習モードで通した名前と、遮断した名前を表示する（許可リストを作るときに使う）
+  learned  学習モードで通した名前と、遮断した名前を表示する。learned suggest で、学習した名前から許可リストを作り、
+           グループを原則拒否にしたポリシーの案を書き出す（例: susanoo ctl learned suggest -group default -out policy.json）
   audit    監査ログの連鎖を確かめ、記録を表示する
   events   保存したイベントを検索する（例: susanoo ctl events -device pc-001 -class finding -since 24h）
   evidence 端末の証拠（隔離のときに CLIENT が集めたもの）を一覧する、表示する、集めさせる（susanoo ctl evidence で説明を表示）
@@ -492,6 +493,9 @@ func ctlGroup(args []string, stdout, stderr io.Writer) int {
 }
 
 func ctlLearned(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "suggest" {
+		return ctlLearnedSuggest(args[1:], stdout, stderr)
+	}
 	flags := flag.NewFlagSet("ctl learned", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	var c ctlFlags

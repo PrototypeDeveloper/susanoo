@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"susanoo/internal/config"
 	"susanoo/internal/sign"
 )
 
@@ -88,10 +89,17 @@ type Bypass struct {
 
 // Egress は外部通信の制御。拒否リストは許可リストより優先する。
 type Egress struct {
-	Default EgressDefault `json:"default"`
-	Allow   []Destination `json:"allow,omitempty"`
-	Deny    []Destination `json:"deny,omitempty"`
+	Default     EgressDefault   `json:"default"`
+	Allow       []Destination   `json:"allow,omitempty"`
+	Deny        []Destination   `json:"deny,omitempty"`
+	LearnPeriod config.Duration `json:"learn_period,omitempty"` // 学習モードの期間（default が learn のとき）。既定 DefaultLearnPeriod
 }
+
+// DefaultLearnPeriod は学習モードの既定の期間。期間が終わっても自動では原則拒否に移らず、管理者に知らせる。
+const DefaultLearnPeriod = 14 * 24 * time.Hour
+
+// LearnPeriodOr は学習モードの期間を返す（書いていなければ既定）。
+func (e Egress) LearnPeriodOr() time.Duration { return e.LearnPeriod.Or(DefaultLearnPeriod) }
 
 // Destination は通信先。Domain と CIDR のどちらか一方を指定する。
 // Domain は「example.jp」で完全一致、「*.example.jp」でその下のすべての名前に一致する。
@@ -246,6 +254,9 @@ func (p *Policy) Validate() error {
 		default:
 			add("%s: egress.default %q は allow、learn、deny のどれかにしてください", where, g.Egress.Default)
 		}
+		if g.Egress.LearnPeriod != 0 && (g.Egress.Default != EgressLearn || g.Egress.LearnPeriod.Or(0) < time.Second || g.Egress.LearnPeriod.Or(0) > 366*24*time.Hour) {
+			add("%s: egress.learn_period は default が learn のときだけ、1 秒から 366 日の間で書けます", where)
+		}
 		switch g.Isolation {
 		case IsolateFull, IsolateManagement, IsolateManagementAndUpdates:
 		default:
@@ -312,6 +323,9 @@ func (d Destination) validate() error {
 	}
 	return errors.Join(errs...)
 }
+
+// ValidateDomain はドメイン名の形を確かめる（validateDomain と同じ）。許可リストの案を作るときに使う。
+func ValidateDomain(name string) error { return validateDomain(name) }
 
 // validateDomain はドメイン名の形を確かめる。英小文字、数字、「-」のラベルを「.」でつなぎ、
 // 先頭にだけ「*.」を付けられる。

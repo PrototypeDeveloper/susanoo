@@ -48,10 +48,11 @@ const (
 	KindRelease  Kind = "release"  // 隔離を解除した
 	KindFinding  Kind = "finding"  // 加点した検知結果（隔離に至らなかったもの）
 	KindIncident Kind = "incident" // インシデントの報告の期限が近づいた、過ぎた（M9）
+	KindLearning Kind = "learning" // 学習モードの期間が終わった（G2）
 	KindTest     Kind = "test"     // 試験の通知（ctl notify test）
 )
 
-var kinds = []Kind{KindIsolate, KindPending, KindAlert, KindRelease, KindFinding, KindIncident}
+var kinds = []Kind{KindIsolate, KindPending, KindAlert, KindRelease, KindFinding, KindIncident, KindLearning}
 
 // DefaultKinds は宛先が種類を書かないときに送る種類（すべて）。
 var DefaultKinds = kinds
@@ -134,7 +135,7 @@ func (c *Config) Validate() error {
 		seen[d.Name] = true
 		for _, k := range d.Events {
 			if !slices.Contains(kinds, k) {
-				add("%s: events の %q は isolate、pending、alert、release、finding、incident のどれかにしてください", where, k)
+				add("%s: events の %q は isolate、pending、alert、release、finding、incident、learning のどれかにしてください", where, k)
 			}
 		}
 		if _, ok := severities[d.MinSeverity]; d.MinSeverity != "" && !ok {

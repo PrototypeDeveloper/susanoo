@@ -44,6 +44,8 @@ const (
 	PathEvidence = "/v1/evidence"
 	// PathNotifyTest は試験の通知を送る（M7）。応答は []NotifyResult。
 	PathNotifyTest = "/v1/notify/test"
+	// PathLearnedSuggest は学習した名前から作った許可リストの案（G2）。?group=グループ&min=回数。応答は AllowSuggestion。
+	PathLearnedSuggest = "/v1/learned/suggest"
 	// PathIncidents はインシデント対応の支援（M9）。GET で一覧（[]Incident。?all=1 なら閉じたものも）、POST で開く（IncidentOpen）。
 	// PathIncidents+"/{ID}" の GET で中身、POST で変える（IncidentUpdate）。"/{ID}/steps/{手順}" の POST で手順の状態を変える
 	// （StepUpdate）。"/{ID}/timeline" の GET で時系列（[]TimelineEntry。?all=1 ならすべての種類のイベント、?before=24h で
@@ -239,6 +241,39 @@ type TimelineEntry struct {
 	Summary  string         `json:"summary"`
 }
 
+// LearningGroup は学習モードのグループの状態（G2）。
+type LearningGroup struct {
+	Group   string    `json:"group"`
+	Started time.Time `json:"started"` // 学習モードになった時刻
+	Ends    time.Time `json:"ends"`    // 期間が終わる時刻
+	Due     bool      `json:"due"`     // 期間が終わった（原則拒否に移るかを決める時期）
+	Learned int       `json:"learned"` // 学習した（通した）名前の数
+	Blocked int       `json:"blocked"` // 拒否リストで遮断した名前の数
+}
+
+// AllowSuggestion は、学習した名前から作った許可リストの案（G2）。
+type AllowSuggestion struct {
+	Group    string                 `json:"group"`
+	Started  time.Time              `json:"started,omitzero"` // 学習モードになった時刻（分からなければ空）
+	MinCount int                    `json:"min_count"`        // 案に入れた名前の、問い合わせの回数の下限
+	Allow    []SuggestedDestination `json:"allow"`
+	Excluded []ExcludedName         `json:"excluded,omitempty"`
+}
+
+// SuggestedDestination は許可リストの案の 1 件。
+type SuggestedDestination struct {
+	Domain   string   `json:"domain"`             // 名前か「*.」で始まる名前
+	Count    int      `json:"count"`              // 問い合わせの回数の合計
+	Names    int      `json:"names"`              // まとめた名前の数
+	Examples []string `json:"examples,omitempty"` // まとめた名前の例
+}
+
+// ExcludedName は案に入れなかった名前と理由。
+type ExcludedName struct {
+	Domain string `json:"domain"`
+	Reason string `json:"reason"`
+}
+
 // IncidentCounts は全体の状態に載せるインシデントの数と、最も近い報告の期限。
 type IncidentCounts struct {
 	Open int               `json:"open"`
@@ -385,6 +420,7 @@ type Status struct {
 	Risky          []Risk          `json:"risky,omitempty"`           // 危険度の高い端末と機器（高い順）
 	Notify         []NotifyStatus  `json:"notify,omitempty"`          // 通知の宛先ごとの送信の状況
 	Incidents      IncidentCounts  `json:"incidents"`                 // 開いているインシデント（M9）
+	Learning       []LearningGroup `json:"learning,omitempty"`        // 学習モードのグループ（G2）
 }
 
 // RulesPush は署名付きの検知ルールの配布（M3）。

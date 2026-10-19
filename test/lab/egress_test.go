@@ -791,7 +791,75 @@ func TestEgress(t *testing.T) {
 		t.Errorf("一覧を消した後に引けません: %d %s", rcode, ans)
 	}
 
-	t.Log("段階9: GW を停止すると（fail_open）、外部通信の制御をやめ、DNS は上流に向け直される")
+	t.Log("段階9: 学習モードの期間を数え、学習した名前から原則拒否のポリシーの案を作る（脅威情報の名前は入れない）。期間を短くすると、終わったと分かる")
+	type learningGroup struct {
+		Group   string
+		Due     bool
+		Learned int
+	}
+	learning := func() map[string]learningGroup {
+		var st struct {
+			Learning []learningGroup `json:"learning"`
+		}
+		l.ctlJSON(&st, "status")
+		m := map[string]learningGroup{}
+		for _, g := range st.Learning {
+			m[g.Group] = g
+		}
+		return m
+	}
+	if lg, ok := learning()["default"]; !ok || lg.Due || lg.Learned == 0 {
+		t.Errorf("学習モードのグループ = %+v", learning())
+	}
+	if _, ok := learning()["strict"]; ok {
+		t.Error("原則拒否のグループを学習モードとして数えています")
+	}
+	suggested := filepath.Join(l.dir, "policy-suggested.json")
+	out := sh(t, "ip", "netns", "exec", nsGW, *susanooBin, "ctl", "learned", "suggest", "-group", "default", "-min", "1", "-out", suggested, "-dir", l.ctrlDir, "-server", controllerAddr)
+	var proposal struct {
+		Groups []struct {
+			Name   string
+			Egress struct {
+				Default string
+				Allow   []struct{ Domain string }
+			}
+		}
+	}
+	data, _ := os.ReadFile(suggested)
+	if err := json.Unmarshal(data, &proposal); err != nil {
+		t.Fatalf("ポリシーの案を読めません: %v\n%s", err, out)
+	}
+	for _, g := range proposal.Groups {
+		if g.Name != "default" {
+			continue
+		}
+		domains := map[string]bool{}
+		for _, a := range g.Egress.Allow {
+			domains[a.Domain] = true
+		}
+		if g.Egress.Default != "deny" || !domains["a.canary.test"] || domains["allowed.test"] {
+			t.Errorf("default の案 = %+v", g.Egress)
+		}
+	}
+	if !strings.Contains(out, "入れなかった名前: allowed.test（脅威情報（lab-alert））") {
+		t.Errorf("案の説明に、脅威情報の名前を入れなかったことがありません:\n%s", out)
+	}
+	// 今のポリシーの default の学習モードの期間を 1 秒にして配布すると、期間が終わったと分かる。
+	var current map[string]any
+	if err := json.Unmarshal([]byte(ctlPolicy("show")), &current); err != nil {
+		t.Fatal(err)
+	}
+	for _, g := range current["groups"].([]any) {
+		if g := g.(map[string]any); g["name"] == "default" {
+			g["egress"].(map[string]any)["learn_period"] = "1s"
+		}
+	}
+	shortened := filepath.Join(l.dir, "policy-short-learning.json")
+	writeJSON(t, shortened, current)
+	ctlPolicy("push", shortened)
+	waitFor(t, "学習モードの期間の終わり", 10*time.Second, func() bool { return learning()["default"].Due })
+
+	t.Log("段階10: GW を停止すると（fail_open）、外部通信の制御をやめ、DNS は上流に向け直される")
 	gwProc.stop(syscall.SIGTERM)
 	if !dialFrom(t, pc2.ns, "203.0.113.4:8080") {
 		t.Error("停止後も許可リストのグループの通信を遮断しています")

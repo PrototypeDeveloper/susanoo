@@ -164,6 +164,8 @@ type Controller struct {
 	evidence   []api.EvidenceInfo // 保存した証拠（C11）
 
 	incidents []*incident // インシデント（M9。mu で守る）
+
+	learning map[string]*learningState // 学習モードのグループ（G2。mu で守る）
 }
 
 // New は台帳、監査ログ、イベントの保存先を開いて CONTROLLER を作る。
@@ -247,6 +249,11 @@ func New(cfg Config) (*Controller, error) {
 		al.Close()
 		return nil, err
 	}
+	if err := c.initLearning(); err != nil {
+		events.Close()
+		al.Close()
+		return nil, err
+	}
 	return c, nil
 }
 
@@ -326,6 +333,7 @@ func (c *Controller) loop(ctx context.Context) {
 			c.saveLearned(false)
 			c.saveBehavior(false)
 			c.checkIncidentDeadlines()
+			c.checkLearning()
 		}
 	}
 }

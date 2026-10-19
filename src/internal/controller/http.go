@@ -39,6 +39,7 @@ func (c *Controller) Handler() http.Handler {
 	mux.Handle("POST "+api.PathDevices+"/{id}/group", c.require(pki.RoleAdmin, c.setDeviceGroup))
 	mux.Handle("POST "+api.PathHosts+"/{mac}/group", c.require(pki.RoleAdmin, c.setHostGroup))
 	mux.Handle("GET "+api.PathLearned, c.require(pki.RoleAdmin, c.listLearned))
+	mux.Handle("GET "+api.PathLearnedSuggest, c.require(pki.RoleAdmin, c.suggestAllow))
 	mux.Handle("POST "+api.PathCertificate, c.require(pki.RoleClient, c.renewCertificate))
 	mux.Handle("POST "+api.PathDevices+"/{id}/revoke", c.require(pki.RoleAdmin, c.revokeDevice))
 	mux.Handle("GET "+api.PathStatus, c.require(pki.RoleAdmin, c.getStatus))

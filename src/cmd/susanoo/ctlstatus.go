@@ -84,6 +84,13 @@ func ctlStatus(args []string, stdout, stderr io.Writer) int {
 	} else {
 		fmt.Fprintf(tw, "脅威情報\tなし\n")
 	}
+	for _, lg := range st.Learning {
+		state := fmt.Sprintf("%s まで（%s）", lg.Ends.Local().Format("01-02 15:04"), remaining(lg.Ends, time.Now()))
+		if lg.Due {
+			state = "期間が終わりました。susanoo ctl learned suggest -group " + lg.Group + " で許可リストの案を作れます"
+		}
+		fmt.Fprintf(tw, "学習モード\t%s（学習した名前 %d、遮断 %d）: %s\n", lg.Group, lg.Learned, lg.Blocked, state)
+	}
 	if n := st.Incidents; n.Open > 0 {
 		s := fmt.Sprintf("対応中 %d", n.Open)
 		if n.Next != nil {
