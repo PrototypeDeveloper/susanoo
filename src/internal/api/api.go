@@ -370,7 +370,10 @@ type AllowSuggestion struct {
 
 // SuggestedDestination は許可リストの案の 1 件。
 type SuggestedDestination struct {
-	Domain   string   `json:"domain"`             // 名前か「*.」で始まる名前
+	Domain   string   `json:"domain,omitempty"`   // 名前か「*.」で始まる名前
+	CIDR     string   `json:"cidr,omitempty"`     // 直接指定したアドレス（Domain の代わり。2m-2）
+	Ports    []int    `json:"ports,omitempty"`    // CIDR のポート
+	Protocol string   `json:"protocol,omitempty"` // CIDR のプロトコル
 	Count    int      `json:"count"`              // 問い合わせの回数の合計
 	Names    int      `json:"names"`              // まとめた名前の数
 	Examples []string `json:"examples,omitempty"` // まとめた名前の例
@@ -378,8 +381,9 @@ type SuggestedDestination struct {
 
 // ExcludedName は案に入れなかった名前と理由。
 type ExcludedName struct {
-	Domain string `json:"domain"`
-	Reason string `json:"reason"`
+	Domain  string `json:"domain,omitempty"`
+	Address string `json:"address,omitempty"` // 直接指定したアドレス（Domain の代わり）
+	Reason  string `json:"reason"`
 }
 
 // IncidentCounts は全体の状態に載せるインシデントの数と、最も近い報告の期限。
@@ -466,12 +470,16 @@ type Host struct {
 
 // Learned は、学習モードで通した名前と、遮断した名前の記録（G2）。許可リストを作るときに使う。
 type Learned struct {
-	Group   string    `json:"group"`
-	Domain  string    `json:"domain"`
-	Blocked bool      `json:"blocked"`
-	Count   int       `json:"count"`
-	First   time.Time `json:"first"`
-	Last    time.Time `json:"last"`
+	Group   string `json:"group"`
+	Domain  string `json:"domain"`
+	Blocked bool   `json:"blocked"`
+	// Address、Port、Protocol は、名前を引かずにアドレスを直接指定した通信（Domain は空。2m-2）。
+	Address  string    `json:"address,omitempty"`
+	Port     int       `json:"port,omitempty"`
+	Protocol string    `json:"protocol,omitempty"`
+	Count    int       `json:"count"`
+	First    time.Time `json:"first"`
+	Last     time.Time `json:"last"`
 }
 
 // GroupRequest は ctl からのグループの割り当て。

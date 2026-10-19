@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -574,11 +575,14 @@ func ctlLearned(args []string, stdout, stderr io.Writer) int {
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(tw, "グループ\t名前\t扱い\t回数\t最初\t最後")
 	for _, l := range list {
-		kind := "学習"
-		if l.Blocked {
+		kind, name := "学習", l.Domain
+		switch {
+		case l.Blocked:
 			kind = "遮断"
+		case l.Address != "":
+			kind, name = "学習（アドレスを直接指定）", net.JoinHostPort(l.Address, strconv.Itoa(l.Port))+"/"+l.Protocol
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", l.Group, l.Domain, kind, l.Count,
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%s\n", l.Group, name, kind, l.Count,
 			l.First.Local().Format("01-02 15:04"), l.Last.Local().Format("01-02 15:04"))
 	}
 	tw.Flush()

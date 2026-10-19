@@ -84,6 +84,7 @@ type Config struct {
 	HeartbeatTimeout time.Duration        // これより長くハートビートがなければ隔離する
 	MaxClockSkew     time.Duration        // 端末の時刻のずれの上限。既定 DefaultMaxClockSkew
 	ClockSynced      func() (bool, error) // この機器の時刻が同期しているかを返す。nil なら分からないものとする
+	VerifyLearned    bool                 // 執行部が許可に加えたアドレスを、DNS の応答の記録と突き合わせる（DNS の問い合わせを記録するとき）
 	MaxEventBytes    int64                // 保存するイベントの合計の上限
 	Logger           *slog.Logger
 	Now              func() time.Time
@@ -137,6 +138,7 @@ type Controller struct {
 	dirty   bool             // 台帳に保存していない変更（最終接続時刻など）がある
 
 	learned learnedLog
+	egw     egressGuard // GW の検知の強化（2m-2）
 
 	// quarantined は GW で遮断しているアドレス。DHCP がロックを取らずに参照する。
 	quarantined atomic.Pointer[map[netip.Addr]bool]
@@ -358,6 +360,7 @@ func (c *Controller) loop(ctx context.Context) {
 			c.saveBehavior(false)
 			c.checkIncidentDeadlines()
 			c.checkLearning()
+			c.checkLearnReports()
 		}
 	}
 }

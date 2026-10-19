@@ -70,7 +70,9 @@ type Config struct {
 	Remote Enforcer   // 判断だけを行い、反映は Remote に任せる（非特権の側）
 	// OnLearn は、学習モードで通した名前（blocked が false）と、遮断した名前（true）を知らせる。
 	OnLearn func(group, name string, blocked bool)
-	Logger  *slog.Logger
+	// LANPrefixes は LAN のネットワーク。DNS で得たアドレスがこの中なら許可に加えない（2m-2）。
+	LANPrefixes []netip.Prefix
+	Logger      *slog.Logger
 }
 
 type allowRule struct {
@@ -107,6 +109,9 @@ type Engine struct {
 
 	mu      sync.Mutex // nftables の操作と lastMAC を守る
 	lastMAC map[string]string
+
+	guard     learnGuard                        // 許可への追加の数（2m-2）
+	onLearned atomic.Pointer[func(LearnReport)] // 許可に加えた結果の知らせ先
 }
 
 // SetLister は集合の中身を読める nft.Runner（nft.Command が満たす）。ポリシーを切り替えるとき、
@@ -485,8 +490,8 @@ func (e *Engine) sets(t Target) (table string, sets4, sets6 []string, err error)
 	return nft.EgressTable, sets4, sets6, nil
 }
 
-// Learn は、DNS で得たアドレスを有効期限付きで t の集合に加える。ループバック、マルチキャスト、
-// リンクローカル、未指定のアドレスは加えない。
+// Learn は、DNS で得たアドレスを有効期限付きで t の集合に加える。未指定のアドレス（遮断の代わりに返す DNS もある）は
+// 黙って加えず、特別な用途、LAN、私的なアドレスと、1 分間に maxNewPerMinute を超える新しいアドレスは加えずに知らせる（2m-2）。
 func (e *Engine) Learn(ctx context.Context, t Target, ips []netip.Addr, ttl time.Duration) error {
 	if e.cfg.Remote != nil {
 		return e.cfg.Remote.Learn(ctx, t, ips, ttl)
@@ -495,19 +500,36 @@ func (e *Engine) Learn(ctx context.Context, t Target, ips []netip.Addr, ttl time
 	if err != nil {
 		return err
 	}
+	report := LearnReport{Time: time.Now(), Updates: t.Updates}
+	allowPrivate := false
+	if groups := e.comp.Load().groups; !t.Updates && t.Group < len(groups) { // sets で確かめた後にポリシーが変わることもある
+		g := groups[t.Group]
+		report.Group, allowPrivate = g.name, g.bypass.AllowPrivateDNS
+	}
+	key := targetKey(t)
 	timeout := min(max(ttl, minLearnTTL), maxLearnTTL) + learnGrace
 	var v4, v6 []netip.Addr
 	for _, ip := range ips {
 		ip = ip.Unmap()
-		if !ip.IsValid() || ip.IsUnspecified() || ip.IsLoopback() || ip.IsMulticast() || ip.IsLinkLocalUnicast() {
+		if !ip.IsValid() || ip.IsUnspecified() {
 			continue
 		}
+		reason := e.refuseReason(ip, allowPrivate)
+		if reason == "" && !e.guard.allow(key, ip, report.Time) {
+			reason = RefuseRate
+		}
+		if reason != "" {
+			report.Refused = append(report.Refused, RefusedAddr{Addr: ip, Reason: reason})
+			continue
+		}
+		report.Added = append(report.Added, ip)
 		if ip.Is4() {
 			v4 = append(v4, ip)
 		} else {
 			v6 = append(v6, ip)
 		}
 	}
+	defer e.reportLearned(report)
 	var b strings.Builder
 	for _, s := range sets4 {
 		b.WriteString(nft.AddWithTimeoutIn(e.cfg.Family, table, s, v4, timeout))

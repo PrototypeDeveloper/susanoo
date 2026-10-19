@@ -76,6 +76,8 @@ func (c *Controller) RecordFlow(r FlowRecord) {
 		e.Unmapped = map[string]any{"tls": map[string]any{"ja4": r.JA4, "alpn": r.ALPN}}
 	}
 	c.observe(e, s)
+	c.checkOutsideLAN("flow", r.Src.Addr())
+	c.checkEgressFlow(r, t, s)
 	c.intelFlow(r, t, s)
 	if r.Blocked {
 		return

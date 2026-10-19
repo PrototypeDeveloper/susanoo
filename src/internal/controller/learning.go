@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -34,6 +35,7 @@ const (
 	wildcardMinNames    = 3 // 同じ登録できる単位の下に、これ以上の名前を学習したら「*.」にまとめる
 	maxSuggestExamples  = 3 // まとめた名前の例の数
 	maxSuggestedEntries = 2000
+	maxSuggestPorts     = 16 // 直接指定したアドレスの案に並べるポートの上限（超えたらすべてのポートを許す案にする）
 )
 
 // learningState は学習モードのグループの記録。
@@ -163,6 +165,7 @@ func (c *Controller) learningViewLocked() []api.LearningGroup {
 
 // suggestAllow は、学習した名前から許可リストの案を作る。回数が min 未満の名前、名前の形でないもの、脅威情報の一覧に載っている
 // 名前は入れない。同じ登録できる単位（example.co.jp など）の下に wildcardMinNames 以上の名前があれば、「*.」にまとめる。
+// 名前を引かずに直接指定したアドレスは、アドレスとプロトコルごとにポートをまとめて、CIDR の許可にする（2m-2）。
 func (c *Controller) suggestAllow(w http.ResponseWriter, r *http.Request, _ pki.Identity) {
 	group := r.URL.Query().Get("group")
 	minCount := defaultSuggestMin
@@ -186,10 +189,27 @@ func (c *Controller) suggestAllow(w http.ResponseWriter, r *http.Request, _ pki.
 		return
 	}
 	counts := map[string]int{}
+	type direct struct {
+		addr, proto string
+	}
+	directs := map[direct]*api.SuggestedDestination{}
 	c.learned.mu.Lock()
 	for k, e := range c.learned.entries {
-		if !k.blocked && (k.group == group || k.group == group+policy.CanarySuffix) {
+		if k.blocked || (k.group != group && k.group != group+policy.CanarySuffix) {
+			continue
+		}
+		if k.addr == "" {
 			counts[k.domain] += e.Count
+			continue
+		}
+		d := directs[direct{k.addr, k.proto}]
+		if d == nil {
+			d = &api.SuggestedDestination{CIDR: k.addr, Protocol: k.proto}
+			directs[direct{k.addr, k.proto}] = d
+		}
+		d.Count += e.Count
+		if !slices.Contains(d.Ports, k.port) {
+			d.Ports = append(d.Ports, k.port)
 		}
 	}
 	c.learned.mu.Unlock()
@@ -216,6 +236,22 @@ func (c *Controller) suggestAllow(w http.ResponseWriter, r *http.Request, _ pki.
 		base := cmp.Or(behavior.BaseDomain(name), name)
 		byBase[base] = append(byBase[base], name)
 	}
+	for _, d := range directs {
+		addr, err := netip.ParseAddr(d.CIDR)
+		if err != nil || d.Count < minCount {
+			continue
+		}
+		if ms := matcher.Addr(addr); len(ms) > 0 {
+			out.Excluded = append(out.Excluded, api.ExcludedName{Address: d.CIDR, Reason: "脅威情報（" + ms[0].List + "）"})
+			continue
+		}
+		d.CIDR = netip.PrefixFrom(addr, addr.BitLen()).String()
+		slices.Sort(d.Ports)
+		if len(d.Ports) > maxSuggestPorts {
+			d.Ports = nil // ポートが多すぎるときは、アドレスのすべてのポートを許す案にする
+		}
+		out.Allow = append(out.Allow, *d)
+	}
 	for base, names := range byBase {
 		slices.Sort(names)
 		if len(names) >= wildcardMinNames && policy.ValidateDomain("*."+base) == nil {
@@ -234,11 +270,11 @@ func (c *Controller) suggestAllow(w http.ResponseWriter, r *http.Request, _ pki.
 		}
 	}
 	slices.SortFunc(out.Allow, func(a, b api.SuggestedDestination) int {
-		return cmp.Or(b.Count-a.Count, strings.Compare(a.Domain, b.Domain))
+		return cmp.Or(b.Count-a.Count, strings.Compare(a.Domain+a.CIDR, b.Domain+b.CIDR), strings.Compare(a.Protocol, b.Protocol))
 	})
 	if len(out.Allow) > maxSuggestedEntries {
 		out.Allow = out.Allow[:maxSuggestedEntries]
 	}
-	slices.SortFunc(out.Excluded, func(a, b api.ExcludedName) int { return strings.Compare(a.Domain, b.Domain) })
+	slices.SortFunc(out.Excluded, func(a, b api.ExcludedName) int { return strings.Compare(a.Domain+a.Address, b.Domain+b.Address) })
 	writeJSON(w, http.StatusOK, out)
 }

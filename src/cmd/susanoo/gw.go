@@ -554,10 +554,13 @@ func prepareGW(ctx context.Context, cfg gwConfig, pol *policy.Policy, listen net
 		return nil, err
 	}
 	var lanAddr6 netip.Addr
+	lanPrefixes := []netip.Prefix{lanPrefix} // DNS で得たアドレスがこの中なら許可に加えない（2m-2）
 	if r := side.Router; r != nil && r.IPv6 {
-		if lanAddr6, _, err = lanIPv6(r.LAN); err != nil {
+		var prefix6 netip.Prefix
+		if lanAddr6, prefix6, err = lanIPv6(r.LAN); err != nil {
 			return nil, err
 		}
+		lanPrefixes = append(lanPrefixes, prefix6)
 	}
 	if listen.Addr() != lanAddr {
 		log.Warn("管理通信の待ち受けアドレスが LAN 側のアドレスと違います", "listen", listen, "LAN", lanAddr)
@@ -607,7 +610,7 @@ func prepareGW(ctx context.Context, cfg gwConfig, pol *policy.Policy, listen net
 
 	// 外部通信の制御（G2、G4）は常に有効にする。DNS の制御（G3）は dns の設定があるときだけ。
 	// ブリッジ方式の DNS の向け直しは BridgeRules が行う。
-	ecfg := egress.Config{Policy: pol, LAN: side.Port, Family: side.Family, NFT: runner, Logger: log}
+	ecfg := egress.Config{Policy: pol, LAN: side.Port, Family: side.Family, NFT: runner, LANPrefixes: lanPrefixes, Logger: log}
 	if cfg.DNS != nil && side.Router != nil {
 		ecfg.DNS, ecfg.DNS6 = lanAddr, lanAddr6
 	}
@@ -917,8 +920,10 @@ func runGWExecutor(ctx context.Context, g *gwPrepared, pols *gwPolicies, intels 
 		}
 	}
 	ctrlEx := privsep.GWExecutor{Quarantine: g.enforcer, Issuer: caIssuer{g.ca, log}, Policies: pols, Intel: intels}
+	var learns <-chan egress.LearnReport
 	if g.engine != nil {
 		ctrlEx.Membership = g.engine
+		learns = learnReports(g.engine)
 	}
 	errc := make(chan error, len(parts))
 	serve := func(p part, ex privsep.GWExecutor, hello any, out privsep.GWNotices) {
@@ -930,7 +935,7 @@ func runGWExecutor(ctx context.Context, g *gwPrepared, pols *gwPolicies, intels 
 			errc <- nil
 		}()
 	}
-	serve(parts[0], ctrlEx, ch, privsep.GWNotices{Changes: changes, Certs: certs})
+	serve(parts[0], ctrlEx, ch, privsep.GWNotices{Changes: changes, Certs: certs, Learns: learns})
 	if withLAN {
 		serve(parts[1], privsep.GWExecutor{Learner: g.engine}, lh, privsep.GWNotices{Policies: lanPolicies, Intel: lanIntel})
 	}
@@ -969,6 +974,7 @@ func runGWInProcess(ctx context.Context, g *gwPrepared, pols *gwPolicies, intels
 		listener: g.files.listener, quarantine: g.enforcer, issuer: caIssuer{g.ca, log}, policies: pols, changes: changes, certs: certs, log: log}
 	var lanPart *gwLAN
 	if g.engine != nil {
+		c.learns = learnReports(g.engine)
 		if lanPart, err = newGWLAN(cfg, current, canary, stateDir, g.files, g.engine, g.engine, log); err != nil {
 			return err
 		}
@@ -1090,7 +1096,8 @@ func serveGWController(conn *os.File, log *slog.Logger) error {
 		chain = append(chain, inter)
 	}
 	c := &gwController{cfg: cfg, pol: pol, canary: canary, pool: pool, root: ca, cert: pki.TLSChain(chain, key), signer: signer,
-		rulesKey: ed25519.PublicKey(hello.RulesKey), intel: remote, intelSet: intelSet, stateDir: hello.StateDir, listener: files.listener, issuer: remote, policies: remote, changes: remote.Changes(), certs: certs, log: log}
+		rulesKey: ed25519.PublicKey(hello.RulesKey), intel: remote, intelSet: intelSet, stateDir: hello.StateDir, listener: files.listener, issuer: remote, policies: remote, changes: remote.Changes(), certs: certs,
+		learns: remote.Learns(), log: log}
 	if cfg.Enforce == nil || *cfg.Enforce {
 		c.quarantine = remote
 	}
@@ -1260,13 +1267,14 @@ type gwController struct {
 	intelSet   *intel.Set              // 執行部が使っている脅威情報
 	stateDir   string
 	listener   *os.File
-	quarantine controller.Enforcer      // 端末単位の遮断。nil なら GW で遮断しない
-	egress     controller.Egress        // 端末のグループの受け渡し。nil ならルーター方式でない
-	lan        controller.LAN           // GW の LAN。nil ならルーター方式でない
-	issuer     controller.Issuer        // 端末の証明書の発行（執行部）
-	policies   controller.PolicyManager // ポリシーの配布（執行部）
-	changes    <-chan string            // 設定ファイルの変更
-	certs      <-chan tls.Certificate   // 更新した CONTROLLER の証明書
+	quarantine controller.Enforcer       // 端末単位の遮断。nil なら GW で遮断しない
+	egress     controller.Egress         // 端末のグループの受け渡し。nil ならルーター方式でない
+	lan        controller.LAN            // GW の LAN。nil ならルーター方式でない
+	issuer     controller.Issuer         // 端末の証明書の発行（執行部）
+	policies   controller.PolicyManager  // ポリシーの配布（執行部）
+	changes    <-chan string             // 設定ファイルの変更
+	certs      <-chan tls.Certificate    // 更新した CONTROLLER の証明書
+	learns     <-chan egress.LearnReport // 執行部が DNS で得たアドレスを許可に加えた結果（2m-2）
 	log        *slog.Logger
 }
 
@@ -1294,6 +1302,7 @@ func (c *gwController) run(ctx context.Context, started func(*controller.Control
 		IntelSet:         c.intelSet,
 		HeartbeatTimeout: c.cfg.HeartbeatTimeout.Or(controller.DefaultHeartbeatTimeout),
 		MaxClockSkew:     c.cfg.MaxClockSkew.Or(controller.DefaultMaxClockSkew),
+		VerifyLearned:    c.cfg.DNS != nil && (c.cfg.DNS.LogQueries == nil || *c.cfg.DNS.LogQueries),
 		ClockSynced:      linux.ClockSynchronized,
 		Logger:           c.log,
 	}
@@ -1322,6 +1331,8 @@ func (c *gwController) run(ctx context.Context, started func(*controller.Control
 				ctrl.ReportChange(p)
 			case cert := <-c.certs:
 				ctrl.SetCertificate(cert)
+			case r := <-c.learns:
+				ctrl.ObserveLearn(r)
 			case <-ctx.Done():
 				return
 			}
@@ -1329,6 +1340,19 @@ func (c *gwController) run(ctx context.Context, started func(*controller.Control
 	}()
 	c.log.Info("GW モードで起動しました", "ポリシー", c.pol.Name, "版数", c.pol.Version, "対応", c.pol.Response)
 	return ctrl.Serve(ctx, ln)
+}
+
+// learnReports は、執行部の外部通信の制御が DNS で得たアドレスを許可に加えた結果を受け取るチャネルを返す（2m-2）。
+// CONTROLLER が遅れているときは捨てる（突き合わせは見逃してよい）。
+func learnReports(e *egress.Engine) <-chan egress.LearnReport {
+	ch := make(chan egress.LearnReport, 256)
+	e.OnLearned(func(r egress.LearnReport) {
+		select {
+		case ch <- r:
+		default:
+		}
+	})
+	return ch
 }
 
 // gwLAN は GW の LAN 側の処理（DNS、DHCP、ARP の監視、通信の記録）。LAN から届くデータを解析するので、

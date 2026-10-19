@@ -34,7 +34,8 @@ import (
 //   - apply_intel（CONTROLLER から）：脅威情報の配布（G7）。署名と版数は執行部がポリシー専用の公開鍵で確かめる
 //
 // つながりごとに受け付ける要求を決め（GWExecutor）、それ以外の要求が届いたら、乗っ取られた恐れがあるとみなしてつながりを切る。
-// 執行部から CONTROLLER には、設定ファイルの変更（G12）と、更新した CONTROLLER の証明書（M1）を、
+// 執行部から CONTROLLER には、設定ファイルの変更（G12）と、更新した CONTROLLER の証明書（M1）と、DNS で得たアドレスを
+// 許可に加えた結果（2m-2。断ったアドレスを含む）を、
 // LAN 側の処理には、切り替えたポリシー（M2）と、DNS で引かせない脅威情報のドメイン（G7）を知らせる。CONTROLLER と LAN 側の処理のつながりは lan.go。
 
 // GW の非特権のプロセスから執行部への要求と、執行部からの知らせ。
@@ -51,6 +52,7 @@ const (
 	noticeControllerCert = "controller_cert"
 	noticePolicy         = "policy"
 	noticeIntel          = "intel"
+	noticeLearnReport    = "learn_report"
 )
 
 // MembershipSetter は端末のグループを外部通信の制御に反映する。
@@ -88,6 +90,7 @@ type GWNotices struct {
 	Certs    <-chan []byte                 // 更新した CONTROLLER の証明書（DER）
 	Policies <-chan controller.PolicyState // 切り替えたポリシー
 	Intel    <-chan intel.Blocklist        // DNS で引かせない脅威情報のドメイン
+	Learns   <-chan egress.LearnReport     // DNS で得たアドレスを許可に加えた結果（2m-2）
 }
 
 type issueBody struct {
@@ -147,6 +150,8 @@ func ServeGW(ctx context.Context, rwc io.ReadWriteCloser, ex GWExecutor, hello a
 				err = p.notify(noticePolicy, st)
 			case b := <-out.Intel:
 				err = p.notify(noticeIntel, b)
+			case r := <-out.Learns:
+				err = p.notify(noticeLearnReport, r)
 			case <-ctx.Done():
 				return
 			}
@@ -253,6 +258,7 @@ type GWRemote struct {
 	certs    chan []byte
 	policies chan controller.PolicyState
 	intel    chan intel.Blocklist
+	learns   chan egress.LearnReport
 }
 
 var (
@@ -270,7 +276,7 @@ func DialGW(rwc io.ReadWriteCloser, hello any, log *slog.Logger) (*GWRemote, err
 		return nil, fmt.Errorf("privsep: 執行部から設定を受け取れません: %w", err)
 	}
 	r := &GWRemote{rwc: rwc, changes: make(chan string, 16), certs: make(chan []byte, 1), policies: make(chan controller.PolicyState, 1),
-		intel: make(chan intel.Blocklist, 1)}
+		intel: make(chan intel.Blocklist, 1), learns: make(chan egress.LearnReport, learnReportQueue)}
 	r.p = newPeer(c, rwc, handlers{notice: r.notice}, log, ErrExecutorStopped)
 	go func() {
 		if err := r.p.run(context.Background()); err != nil && !errors.Is(err, io.EOF) {
@@ -321,6 +327,15 @@ func (r *GWRemote) notice(typ string, body json.RawMessage) error {
 		default:
 		}
 		r.intel <- b
+	case noticeLearnReport:
+		var lr egress.LearnReport
+		if err := decodeBody(body, &lr); err != nil {
+			return err
+		}
+		select {
+		case r.learns <- lr:
+		default: // 受け取り手が遅れているときは捨てる（突き合わせは見逃してよい）
+		}
 	default:
 		return fmt.Errorf("privsep: 知らない知らせ %q です", typ)
 	}
@@ -382,6 +397,12 @@ func (r *GWRemote) IssueClient(ctx context.Context, id string, pub ed25519.Publi
 
 // Changes は、執行部が見つけた設定ファイルの変更を届けるチャネルを返す。
 func (r *GWRemote) Changes() <-chan string { return r.changes }
+
+// learnReportQueue は、CONTROLLER に渡していない許可への追加の結果の上限。
+const learnReportQueue = 256
+
+// Learns は、執行部が DNS で得たアドレスを許可に加えた結果を受け取るチャネルを返す（2m-2）。
+func (r *GWRemote) Learns() <-chan egress.LearnReport { return r.learns }
 
 // Done は執行部とのつながりが切れたら閉じるチャネルを返す。
 func (r *GWRemote) Done() <-chan struct{} { return r.p.done }

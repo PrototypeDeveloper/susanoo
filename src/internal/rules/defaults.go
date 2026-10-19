@@ -34,12 +34,17 @@ var Defaults = []Rule{
 	{ID: "command-not-applied", Name: "指示の未適用", Finding: event.FindingTypeCommandNotApplied, Mode: ModeEnforce, Score: 0},
 	// 端末の ARP の表のなりすまし（2m-1）。知らせた端末は被害の側なので加点しない。なりすました機器は gateway-spoofing で扱う。
 	{ID: "arp-poisoning", Name: "端末の ARP の表のなりすまし", Finding: event.FindingTypeARPPoisoning, Mode: ModeEnforce, Score: 0},
+	// GW の内部の異常（2m-2）。端末の振る舞いではないので加点しない（記録して通知する）。
+	{ID: "learn-anomaly", Name: "許可への異常な追加", Finding: event.FindingTypeLearnAnomaly, Mode: ModeEnforce, Score: 0},
+	{ID: "observation-mismatch", Name: "LAN 側の処理の知らせの食い違い", Finding: event.FindingTypeObservationMismatch, Mode: ModeEnforce, Score: 0},
 	// 振る舞いの検知（G6）は誤検知が出やすいため、試験運用から始める。
 	{ID: "beacon", Name: "周期的な通信", Finding: event.FindingTypeBeacon, Mode: ModeMonitor, Score: 40},
 	{ID: "large-upload", Name: "大量の送信", Finding: event.FindingTypeLargeUpload, Mode: ModeMonitor, Score: 50},
 	{ID: "internal-scan", Name: "LAN 内のスキャン", Finding: event.FindingTypeInternalScan, Mode: ModeMonitor, Score: 60},
 	{ID: "new-destinations", Name: "新しい宛先の急増", Finding: event.FindingTypeNewDestinations, Mode: ModeMonitor, Score: 30},
 	{ID: "off-hours", Name: "時間外の通信", Finding: event.FindingTypeOffHours, Mode: ModeMonitor, Score: 20},
+	// 許可リストの抜け道（2m-2）。CDN などで共有するアドレス経由の接続。アプリが別の名前で同じアドレスにつなぐこともあるので試験運用から。
+	{ID: "unlisted-sni", Name: "許可していない名前への接続", Finding: event.FindingTypeUnlistedSNI, Mode: ModeMonitor, Score: 40},
 	// 脅威情報（G7）。遮断の一覧は GW が止めるので、危険度による隔離は、一覧の質を確かめてから有効にする。
 	{ID: "threat-intel", Name: "脅威情報に当てはまる通信", Finding: event.FindingTypeThreatIntel, Mode: ModeMonitor, Score: 50},
 	// CLIENT の検知（2c-1）。管理者の作業やパッケージの更新でも当てはまるため、試験運用から始め、例外で平常の操作を除く。

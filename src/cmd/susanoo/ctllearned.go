@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"susanoo/internal/api"
@@ -64,17 +65,42 @@ func ctlLearnedSuggest(args []string, stdout, stderr io.Writer) int {
 		tw := tabwriter.NewWriter(summary, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(tw, "  許可する名前\t回数\tまとめた名前")
 		for _, a := range sug.Allow {
+			if a.CIDR != "" {
+				fmt.Fprintf(tw, "  %s %s %s（直接指定したアドレス）\t%d\t-\n", a.CIDR, dash(a.Protocol), dash(joinInts(a.Ports)), a.Count)
+				continue
+			}
 			fmt.Fprintf(tw, "  %s\t%d\t%d\n", a.Domain, a.Count, a.Names)
 		}
 		tw.Flush()
 	}
 	for _, x := range sug.Excluded {
+		if x.Address != "" {
+			fmt.Fprintf(summary, "  入れなかったアドレス: %s（%s）\n", x.Address, x.Reason)
+			continue
+		}
 		fmt.Fprintf(summary, "  入れなかった名前: %s（%s）\n", x.Domain, x.Reason)
 	}
 	if *out != "" {
 		fmt.Fprintf(summary, "内容を確かめてから、susanoo ctl policy push %s -canary <端末> で一部の端末から適用し、問題がなければ susanoo ctl policy promote で全体に広げてください。\n", *out)
 	}
 	return exitOK
+}
+
+// joinInts は数の並びを「,」でつなぐ。
+func joinInts(ns []int) string {
+	s := make([]string, len(ns))
+	for i, n := range ns {
+		s[i] = strconv.Itoa(n)
+	}
+	return strings.Join(s, ",")
+}
+
+// destinationKey は許可リストの宛先の識別（同じ宛先を二重に加えないため）。
+func destinationKey(d policy.Destination) string {
+	if d.Domain != "" {
+		return d.Domain
+	}
+	return fmt.Sprint(d.CIDR, d.Protocol, d.Ports)
 }
 
 // suggestedPolicy は今のポリシー current の、グループ s.Group を原則拒否にし、許可リストの案を加えたポリシーを返す。
@@ -95,15 +121,20 @@ func suggestedPolicy(current []byte, s api.AllowSuggestion) ([]byte, int, error)
 	}
 	have := map[string]bool{}
 	for _, d := range g.Egress.Allow {
-		if d.Domain != "" {
-			have[d.Domain] = true
-		}
+		have[destinationKey(d)] = true
 	}
 	added := 0
 	for _, a := range s.Allow {
-		if !have[a.Domain] {
-			g.Egress.Allow = append(g.Egress.Allow, policy.Destination{Domain: a.Domain})
-			have[a.Domain] = true
+		d := policy.Destination{Domain: a.Domain}
+		if a.CIDR != "" { // 名前を引かずに直接指定したアドレス
+			d = policy.Destination{CIDR: a.CIDR, Protocol: a.Protocol}
+			for _, p := range a.Ports {
+				d.Ports = append(d.Ports, uint16(p))
+			}
+		}
+		if k := destinationKey(d); !have[k] {
+			g.Egress.Allow = append(g.Egress.Allow, d)
+			have[k] = true
 			added++
 		}
 	}

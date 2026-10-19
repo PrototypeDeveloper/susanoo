@@ -85,6 +85,9 @@ type Bypass struct {
 	AllowDoH  bool `json:"allow_doh,omitempty"`  // DNS over HTTPS / TLS を通す
 	AllowVPN  bool `json:"allow_vpn,omitempty"`  // VPN、トンネル、iCloud プライベートリレーを通す
 	AllowECH  bool `json:"allow_ech,omitempty"`  // ECH の設定を含む DNS の HTTPS・SVCB レコードを返す
+	// AllowPrivateDNS は、許可したドメインが私的なアドレス（10.0.0.0/8 など）に解決されたときも許可に加える（社内のサーバーなど）。
+	// 既定では、DNS リバインディングで GW の外側の私的なネットワークに入られないよう、加えない（2m-2）。
+	AllowPrivateDNS bool `json:"allow_private_dns,omitempty"`
 }
 
 // Egress は外部通信の制御。拒否リストは許可リストより優先する。

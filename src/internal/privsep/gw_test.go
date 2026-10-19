@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -66,6 +67,7 @@ type gwPair struct {
 	certs    chan []byte
 	policies chan controller.PolicyState
 	intel    chan intel.Blocklist
+	learns   chan egress.LearnReport
 	done     chan error
 	cancel   context.CancelFunc
 }
@@ -131,10 +133,10 @@ func startGW(t *testing.T, delay time.Duration, access func(controller.Enforcer,
 	ours, theirs := socketpair(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	g := &gwPair{nft: rec, changes: make(chan string, 1), certs: make(chan []byte, 1), policies: make(chan controller.PolicyState, 1),
-		intel: make(chan intel.Blocklist, 1), done: make(chan error, 1), cancel: cancel}
+		intel: make(chan intel.Blocklist, 1), learns: make(chan egress.LearnReport, 1), done: make(chan error, 1), cancel: cancel}
 	ex := access(&gw.Enforcer{NFT: rec, ManagementPort: 8443}, engine)
 	go func() {
-		g.done <- ServeGW(ctx, ours, ex, gwHello{Name: "gw"}, GWNotices{Changes: g.changes, Certs: g.certs, Policies: g.policies, Intel: g.intel}, quiet)
+		g.done <- ServeGW(ctx, ours, ex, gwHello{Name: "gw"}, GWNotices{Changes: g.changes, Certs: g.certs, Policies: g.policies, Intel: g.intel, Learns: g.learns}, quiet)
 	}()
 	t.Cleanup(func() { cancel(); <-g.done })
 
@@ -362,6 +364,22 @@ func TestGWPolicies(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("切り替えたポリシーの知らせが届かない")
+	}
+}
+
+// 執行部は、DNS で得たアドレスを許可に加えた結果（断ったアドレスを含む）を CONTROLLER に知らせる（2m-2）。
+func TestGWLearnReports(t *testing.T) {
+	g := startGW(t, 0, fullAccess)
+	want := egress.LearnReport{Group: "strict", Added: []netip.Addr{netip.MustParseAddr("192.0.2.1")},
+		Refused: []egress.RefusedAddr{{Addr: netip.MustParseAddr("192.168.77.1"), Reason: egress.RefusePrivate}}}
+	g.learns <- want
+	select {
+	case got := <-g.remote.Learns():
+		if got.Group != want.Group || !slices.Equal(got.Added, want.Added) || !slices.Equal(got.Refused, want.Refused) {
+			t.Errorf("届いた結果 = %+v", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("許可に加えた結果の知らせが届かない")
 	}
 }
 

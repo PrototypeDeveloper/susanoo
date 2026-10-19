@@ -26,6 +26,9 @@ type LANGateways interface {
 
 // ObserveLease は DHCP の割り当てと解放を台帳に反映する（DHCP サーバーから呼ぶ）。
 func (c *Controller) ObserveLease(mac string, ip netip.Addr, hostname string, expiry time.Time, released bool) {
+	if c.checkOutsideLAN("lease", ip) {
+		return // GW の DHCP サーバーは LAN の外のアドレスを貸さない
+	}
 	now := c.now()
 	c.mu.Lock()
 	h, isNew := c.hostLocked(mac, now)

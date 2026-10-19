@@ -39,6 +39,8 @@ const (
 type learnedKey struct {
 	group, domain string
 	blocked       bool
+	addr, proto   string // 直接指定したアドレスへの通信（domain は空。2m-2）
+	port          int
 }
 
 // learnedLog は、学習モードで通した名前と遮断した名前の記録。DNS の問い合わせごとに更新するので、
@@ -66,7 +68,7 @@ func loadLearned(path string) (map[learnedKey]*api.Learned, error) {
 		return nil, fmt.Errorf("controller: 学習の記録 %s を解析できません: %w", path, err)
 	}
 	for _, l := range list {
-		entries[learnedKey{l.Group, l.Domain, l.Blocked}] = l
+		entries[learnedKey{group: l.Group, domain: l.Domain, blocked: l.Blocked, addr: l.Address, proto: l.Protocol, port: l.Port}] = l
 	}
 	return entries, nil
 }
@@ -77,7 +79,7 @@ func (c *Controller) RecordLearned(group, domain string, blocked bool) {
 	l := &c.learned
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	key := learnedKey{group, domain, blocked}
+	key := learnedKey{group: group, domain: domain, blocked: blocked}
 	e := l.entries[key]
 	if e == nil {
 		if len(l.entries) >= maxLearned {
@@ -113,7 +115,7 @@ func (c *Controller) learnedList() []api.Learned {
 			}
 			return -1
 		}
-		return cmp.Or(b.Count-a.Count, strings.Compare(a.Domain, b.Domain))
+		return cmp.Or(b.Count-a.Count, strings.Compare(learnedLabel(a), learnedLabel(b)))
 	})
 	return out
 }
@@ -177,6 +179,10 @@ func (c *Controller) RecordDNS(r DNSRecord) {
 	}
 	e.Unmapped = map[string]any{"dns": map[string]any{"action": r.Action, "reason": r.Reason, "group": r.Group}}
 	c.observe(e, s)
+	c.checkOutsideLAN("dns", r.Client)
+	if r.Action == "forward" && r.Rcode == 0 && r.Group != "" {
+		c.rememberAnswers(r.Group, r.Answers, c.now())
+	}
 	if r.Client.IsValid() {
 		c.reportBehavior(c.detector.DNS(sub, r.Name, c.now()), t, s)
 		c.intelDNS(r, t, s)
