@@ -119,7 +119,7 @@ func TestEnrollChecksResponse(t *testing.T) {
 					t.Error("要求の証明が合わない")
 				}
 				resp := tc.resp(req)
-				resp.Proof = ResponseProof(tc.proofK, exporter, resp.Certificate, resp.Chain, resp.CA, resp.CommandKey)
+				resp.Proof = ResponseProof(tc.proofK, exporter, resp.Certificate, resp.Chain, resp.CA, resp.CommandKey, resp.ReleaseKey)
 				json.NewEncoder(w).Encode(resp)
 			})
 			res, err := Enroll(context.Background(), addr, "pc-001", code, priv)

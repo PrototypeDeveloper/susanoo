@@ -193,6 +193,11 @@ func runEnroll(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 	if err := keys.SavePublic(filepath.Join(*dir, fileCommandPub), res.CommandKey); err != nil {
 		return fail(stderr, err)
 	}
+	if res.ReleaseKey != nil {
+		if err := keys.SavePublic(filepath.Join(*dir, fileReleasePub), res.ReleaseKey); err != nil {
+			return fail(stderr, err)
+		}
+	}
 	fmt.Fprintf(stdout, "端末 %s を登録しました（証明書の期限 %s）。\n%s に %s、%s、%s を置きました。"+
 		"設定ファイルの pki_dir にこのディレクトリを、controller に %s を書いて、CLIENT を起動してください。\n",
 		*id, res.Chain[0].NotAfter.Local().Format("2006-01-02"), *dir, fileClientCert, fileCACert, fileCommandPub, *addr)

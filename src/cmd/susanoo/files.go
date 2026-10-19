@@ -4,6 +4,8 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
+	"io/fs"
 	"path/filepath"
 
 	"susanoo/internal/keys"
@@ -26,6 +28,7 @@ const (
 	fileClientKey      = "client.key"
 	fileClientPub      = "client.pub"
 	fileCommandPub     = "command.pub" // CLIENT が指示の検証に使う公開鍵（sign.pub と同じもの）
+	fileReleasePub     = "release.pub" // CLIENT がリリースの目録の検証に使う公開鍵（policy.pub と同じもの）
 )
 
 func loadPool(dir string) (*x509.CertPool, error) {
@@ -58,4 +61,13 @@ func loadLeaf(dir, certFile, keyFile string) (tls.Certificate, error) {
 
 func loadCommandKey(dir string) (ed25519.PublicKey, error) {
 	return keys.LoadPublic(filepath.Join(dir, fileCommandPub))
+}
+
+// loadReleaseKey はリリースの目録を確かめる公開鍵を読む。なければ nil（リリースに入れ替えない）。
+func loadReleaseKey(dir string) (ed25519.PublicKey, error) {
+	k, err := keys.LoadPublic(filepath.Join(dir, fileReleasePub))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	return k, err
 }

@@ -93,9 +93,9 @@ func RequestProof(key, exporter []byte, id string, pub []byte) []byte {
 	return mac(key, []byte("request"), exporter, []byte(id), pub)
 }
 
-// ResponseProof は CONTROLLER の応答の証明（発行した証明書、連なり、認証局、指示の公開鍵をこの接続に結び付ける）を計算する。
-func ResponseProof(key, exporter, cert []byte, chain [][]byte, ca, commandKey []byte) []byte {
-	parts := [][]byte{[]byte("response"), exporter, cert, ca, commandKey}
+// ResponseProof は CONTROLLER の応答の証明（発行した証明書、連なり、認証局、指示とリリースの公開鍵をこの接続に結び付ける）を計算する。
+func ResponseProof(key, exporter, cert []byte, chain [][]byte, ca, commandKey, releaseKey []byte) []byte {
+	parts := [][]byte{[]byte("response"), exporter, cert, ca, commandKey, releaseKey}
 	return mac(key, append(parts, chain...)...)
 }
 

@@ -24,6 +24,7 @@ type Result struct {
 	Chain      []*x509.Certificate // 先頭が端末の証明書。続くのは連ねる認証局の証明書（二段構えの発行用の認証局）
 	CA         *x509.Certificate   // 内部の認証局（ルート）の証明書
 	CommandKey ed25519.PublicKey   // CONTROLLER の指示の署名を確かめる公開鍵
+	ReleaseKey ed25519.PublicKey   // リリースの目録を確かめる公開鍵（CONTROLLER が知らなければ nil）
 }
 
 const enrollTimeout = 30 * time.Second
@@ -90,7 +91,7 @@ func Enroll(ctx context.Context, addr, id, code string, priv ed25519.PrivateKey)
 	if err := json.NewDecoder(io.LimitReader(resp.Body, api.MaxBodyBytes)).Decode(&er); err != nil {
 		return nil, fmt.Errorf("enroll: 応答を解析できません: %w", err)
 	}
-	if !Equal(er.Proof, ResponseProof(key, exporter, er.Certificate, er.Chain, er.CA, er.CommandKey)) {
+	if !Equal(er.Proof, ResponseProof(key, exporter, er.Certificate, er.Chain, er.CA, er.CommandKey, er.ReleaseKey)) {
 		return nil, errors.New("enroll: 応答の証明が合いません（登録コードが違うか、途中で書き換えられています）")
 	}
 	return check(cs, want, pub, &er)
@@ -160,5 +161,12 @@ func check(cs tls.ConnectionState, want pki.Identity, pub ed25519.PublicKey, er 
 	if len(er.CommandKey) != ed25519.PublicKeySize {
 		return nil, errors.New("enroll: 指示の公開鍵の長さが正しくありません")
 	}
-	return &Result{Chain: chain, CA: ca, CommandKey: ed25519.PublicKey(er.CommandKey)}, nil
+	res := &Result{Chain: chain, CA: ca, CommandKey: ed25519.PublicKey(er.CommandKey)}
+	if len(er.ReleaseKey) > 0 {
+		if len(er.ReleaseKey) != ed25519.PublicKeySize {
+			return nil, errors.New("enroll: リリースの公開鍵の長さが正しくありません")
+		}
+		res.ReleaseKey = ed25519.PublicKey(er.ReleaseKey)
+	}
+	return res, nil
 }

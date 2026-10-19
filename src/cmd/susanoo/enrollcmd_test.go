@@ -44,6 +44,11 @@ func TestEnrollCommands(t *testing.T) {
 	if !bytes.Equal(signPub, commandPub) {
 		t.Error("指示の公開鍵が CONTROLLER の署名の鍵と違う")
 	}
+	policyPub, _ := os.ReadFile(filepath.Join(ctrlDir, filePolicyPub))
+	releasePub, _ := os.ReadFile(filepath.Join(clientDir, fileReleasePub))
+	if !bytes.Equal(policyPub, releasePub) {
+		t.Error("登録で受け取ったリリースの公開鍵がポリシーの署名の公開鍵と違う")
+	}
 	caCtrl, _ := os.ReadFile(filepath.Join(ctrlDir, fileCACert))
 	caClient, _ := os.ReadFile(filepath.Join(clientDir, fileCACert))
 	if !bytes.Equal(caCtrl, caClient) {

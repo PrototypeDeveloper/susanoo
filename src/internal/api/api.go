@@ -57,7 +57,14 @@ const (
 	// PathEnrollCodes は登録コードの管理（管理者）。POST で作り（EnrollCodeCreate。応答の EnrollCode にだけコードが入る）、
 	// GET で一覧（[]EnrollCode）、PathEnrollCodes+"/{端末ID}" の DELETE で取り消す。
 	PathEnrollCodes = "/v1/enroll/codes"
+	// PathReleases はリリースの配布。管理者は GET で状態（ReleaseInfo。配布していなければ 404）、POST で目録を送る
+	// （ReleasePush）。PathReleases+"/files/{os}/{arch}" の PUT で実行ファイルを送り（本文はファイルそのもの）、
+	// 端末は GET で受け取る。"/promote" の POST で全体に広げ、"/abort" の POST で配布をやめる。
+	PathReleases = "/v1/releases"
 )
+
+// MaxReleaseBytes はリリースの実行ファイルの大きさの上限。
+const MaxReleaseBytes = 256 << 20
 
 // EnrollCodeCreate は登録コードを作る要求。
 type EnrollCodeCreate struct {
@@ -83,10 +90,11 @@ type EnrollRequest struct {
 
 // EnrollResponse は端末の登録の応答。Proof は、登録コードと TLS の exporter で中身を結び付けた HMAC（enroll.ResponseProof）。
 type EnrollResponse struct {
-	Certificate []byte   `json:"certificate"`     // 端末の証明書（DER）
-	Chain       [][]byte `json:"chain,omitempty"` // 連ねる認証局の証明書（DER）
-	CA          []byte   `json:"ca"`              // 内部の認証局（ルート）の証明書（DER）
-	CommandKey  []byte   `json:"command_key"`     // 指示の署名を確かめる公開鍵（ed25519）
+	Certificate []byte   `json:"certificate"`           // 端末の証明書（DER）
+	Chain       [][]byte `json:"chain,omitempty"`       // 連ねる認証局の証明書（DER）
+	CA          []byte   `json:"ca"`                    // 内部の認証局（ルート）の証明書（DER）
+	CommandKey  []byte   `json:"command_key"`           // 指示の署名を確かめる公開鍵（ed25519）
+	ReleaseKey  []byte   `json:"release_key,omitempty"` // リリースの目録を確かめる公開鍵（ed25519。ポリシーの署名の鍵）
 	Proof       []byte   `json:"proof"`
 }
 
@@ -118,6 +126,7 @@ type Heartbeat struct {
 	Isolation    policy.IsolationLevel `json:"isolation,omitempty"`   // 今の自己隔離の状態（空なら隔離していない）
 	AppControl   policy.AppMode        `json:"app_control,omitempty"` // 効いているプロセス単位の通信の制御の扱い（C7。空なら効いていない）
 	Capabilities platform.Capabilities `json:"capabilities"`
+	Version      string                `json:"version,omitempty"` // CLIENT の版数（リリースの配布に使う）
 }
 
 // EventBatch は CLIENT が送るイベントのまとまり。
@@ -141,7 +150,51 @@ type Command struct {
 	Updates   []netip.Prefix        `json:"updates,omitempty"`   // 隔離中も許可する更新サーバー
 	Evidence  uint64                `json:"evidence,omitempty"`  // 証拠を集める要求の番号。適用済みより大きければ集める（C11）
 	Apps      *policy.AppControl    `json:"apps,omitempty"`      // プロセス単位の通信の制御（C7。端末のグループの設定。なければ制御しない）
+	Release   *ReleaseOffer         `json:"release,omitempty"`   // 入れ替えを勧めるリリース（版数とは別に、受け取るたびに確かめる）
 	IssuedAt  time.Time             `json:"issued_at"`
+}
+
+// ReleaseManifest はリリースの目録（sign.PurposeRelease で、管理者の手元のポリシーの署名の鍵で署名する）。
+// 実行ファイルそのものには署名せず、OS と CPU ごとのファイルのハッシュと大きさを目録に書いて結び付ける。
+type ReleaseManifest struct {
+	Version  string        `json:"version"`
+	IssuedAt time.Time     `json:"issued_at"`
+	Files    []ReleaseFile `json:"files"`
+}
+
+// ReleaseFile はリリースの実行ファイル。
+type ReleaseFile struct {
+	OS     string `json:"os"`     // linux など（runtime.GOOS）
+	Arch   string `json:"arch"`   // amd64 など（runtime.GOARCH）
+	SHA256 string `json:"sha256"` // 16 進数
+	Size   int64  `json:"size"`
+}
+
+// ReleaseOffer は、CONTROLLER が端末に入れ替えを勧めるリリース。CLIENT は目録の署名を自分で確かめる。
+type ReleaseOffer struct {
+	Version  string        `json:"version"`
+	Manifest sign.Envelope `json:"manifest"`
+}
+
+// ReleasePush は署名したリリースの目録の配布。Canary か CanaryGroups があれば、その端末にだけ先に配る。
+type ReleasePush struct {
+	Manifest     sign.Envelope `json:"manifest"`
+	Canary       []string      `json:"canary,omitempty"`        // 端末 ID
+	CanaryGroups []string      `json:"canary_groups,omitempty"` // グループ
+}
+
+// ReleaseInfo は配布しているリリースの状態。
+type ReleaseInfo struct {
+	Version      string    `json:"version"`
+	IssuedAt     time.Time `json:"issued_at"`
+	PushedAt     time.Time `json:"pushed_at"`
+	Files        []string  `json:"files"`   // OS/CPU（例 linux/amd64）
+	Missing      []string  `json:"missing"` // まだ送られていないファイル
+	Promoted     bool      `json:"promoted"`
+	Canary       []string  `json:"canary,omitempty"`
+	CanaryGroups []string  `json:"canary_groups,omitempty"`
+	Updated      []string  `json:"updated"` // この版数で動いている端末
+	Pending      []string  `json:"pending"` // 勧めているが、まだ入れ替えていない端末
 }
 
 // 証拠を集めたきっかけ（Evidence.Reason）。
@@ -344,6 +397,7 @@ type NotifyStatus struct {
 
 // Device は ctl に返す端末の状態。
 type Device struct {
+	Software   string                `json:"software,omitempty"` // CLIENT の版数
 	ID         string                `json:"id"`
 	Group      string                `json:"group"`
 	Addr       string                `json:"addr,omitempty"`

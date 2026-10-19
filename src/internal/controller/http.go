@@ -71,6 +71,12 @@ func (c *Controller) Handler() http.Handler {
 	mux.Handle("GET "+api.PathEnrollCodes, c.require(pki.RoleAdmin, c.listEnrollCodes))
 	mux.Handle("DELETE "+api.PathEnrollCodes+"/{id}", c.require(pki.RoleAdmin, c.deleteEnrollCode))
 	mux.HandleFunc("POST "+api.PathEnroll, c.enrollDevice) // 証明書なしで受け付ける唯一の窓口
+	mux.Handle("GET "+api.PathReleases, c.require(pki.RoleAdmin, c.getRelease))
+	mux.Handle("POST "+api.PathReleases, c.require(pki.RoleAdmin, c.pushRelease))
+	mux.Handle("PUT "+api.PathReleases+"/files/{os}/{arch}", c.require(pki.RoleAdmin, c.uploadRelease))
+	mux.Handle("GET "+api.PathReleases+"/files/{os}/{arch}", c.require(pki.RoleClient, c.downloadRelease))
+	mux.Handle("POST "+api.PathReleases+"/promote", c.require(pki.RoleAdmin, c.promoteRelease))
+	mux.Handle("POST "+api.PathReleases+"/abort", c.require(pki.RoleAdmin, c.abortRelease))
 	return noCertGate(mux)
 }
 
@@ -139,6 +145,7 @@ func (c *Controller) heartbeat(w http.ResponseWriter, r *http.Request, id pki.Id
 	d.Features = slices.Clone(hb.Capabilities.Features)
 	d.Applied, d.AppliedVersion = hb.Isolation, hb.Applied
 	d.AppControl = hb.AppControl
+	c.recordSoftwareLocked(d, hb)
 	cert := r.TLS.PeerCertificates[0]
 	d.CertExpiry = cert.NotAfter
 	if !d.Revoked.IsZero() && pki.IssuedAt(cert).After(d.Revoked) {

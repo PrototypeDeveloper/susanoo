@@ -322,11 +322,11 @@ func (c *Controller) enrollDevice(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cert := chain[0]
-	resp := api.EnrollResponse{Certificate: cert.Raw, CA: c.cfg.Root.Raw, CommandKey: c.cfg.Signer.PublicKey()}
+	resp := api.EnrollResponse{Certificate: cert.Raw, CA: c.cfg.Root.Raw, CommandKey: c.cfg.Signer.PublicKey(), ReleaseKey: c.cfg.RulesKey}
 	for _, inter := range chain[1:] {
 		resp.Chain = append(resp.Chain, inter.Raw)
 	}
-	resp.Proof = enroll.ResponseProof(rec.Key, exporter, resp.Certificate, resp.Chain, resp.CA, resp.CommandKey)
+	resp.Proof = enroll.ResponseProof(rec.Key, exporter, resp.Certificate, resp.Chain, resp.CA, resp.CommandKey, resp.ReleaseKey)
 	c.mu.Lock()
 	c.auditLocked("enroll", ActionEnroll, req.ID, addr, map[string]any{
 		"serial": cert.SerialNumber.Text(16), "not_after": cert.NotAfter.UTC(), "code_by": rec.By,

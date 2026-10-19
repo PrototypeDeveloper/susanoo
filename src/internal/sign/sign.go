@@ -24,6 +24,7 @@ const (
 	PurposeCommand   Purpose = "command"   // 隔離や解除の命令（M6）
 	PurposeHeartbeat Purpose = "heartbeat" // ハートビート（G10、C10）
 	PurposeEvidence  Purpose = "evidence"  // 端末が集めた証拠（C11）
+	PurposeRelease   Purpose = "release"   // リリースの目録（実行ファイルのハッシュ。管理者の手元の鍵で署名する）
 )
 
 // domain は署名の対象の先頭に付ける文字列。ほかの仕組みの署名と取り違えないようにする。

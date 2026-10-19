@@ -169,6 +169,8 @@ type Controller struct {
 
 	learning map[string]*learningState // 学習モードのグループ（G2。mu で守る）
 
+	release *releaseState // 配布しているリリース（mu で守る。なければ nil）
+
 	enrollMu       sync.Mutex
 	enrollCodes    map[string]*enrollCode // 端末 ID → 登録コード（M1。enrollMu で守る）
 	enrollAttempts []time.Time            // 最近の登録の要求の時刻（enrollMu で守る）
@@ -256,6 +258,11 @@ func New(cfg Config) (*Controller, error) {
 		return nil, err
 	}
 	if err := c.initLearning(); err != nil {
+		events.Close()
+		al.Close()
+		return nil, err
+	}
+	if err := c.initRelease(); err != nil {
 		events.Close()
 		al.Close()
 		return nil, err
@@ -629,7 +636,8 @@ func (c *Controller) commandLocked(d *device) (sign.Envelope, error) {
 		d.Version = nextVersion(d.Version, c.now())
 		c.saveLocked()
 	}
-	cmd := api.Command{DeviceID: d.ID, Version: d.Version, Isolation: d.Isolation, Evidence: d.Evidence, Apps: g.Apps, IssuedAt: c.now().UTC()}
+	cmd := api.Command{DeviceID: d.ID, Version: d.Version, Isolation: d.Isolation, Evidence: d.Evidence, Apps: g.Apps, IssuedAt: c.now().UTC(),
+		Release: c.releaseOfferLocked(d)}
 	if d.Isolation == policy.IsolateManagementAndUpdates {
 		cmd.Updates = g.UpdatePrefixes()
 	}

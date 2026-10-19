@@ -77,6 +77,7 @@ type device struct {
 	CertExpiry time.Time `json:"cert_expiry"`
 	Revoked    time.Time `json:"revoked"`
 	AppControl string    `json:"app_control"`
+	Software   string    `json:"software"`
 }
 
 type host struct {

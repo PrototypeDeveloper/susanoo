@@ -69,7 +69,10 @@ fuzz:
 # 検証環境の試験（root 権限が必要）。ビルドは一般ユーザーで行い、sudo は試験の実行だけに使う。
 # 試験は使い捨てのネットワーク名前空間とマウント名前空間の中で動き、ホストのネットワークには触れない。
 LAB_NS := sudo unshare --net --mount --propagation private
+# LAB_NEXT はリリースの入れ替えの試験で配る版数（どの版よりも新しい）。
+LAB_NEXT := 99.0.0-lab
 lab-test: build
+	CGO_ENABLED=0 $(GO) -C src build -trimpath -ldflags '-X susanoo/internal/version.Version=$(LAB_NEXT)' -o $(BIN)/susanoo-next ./cmd/susanoo
 	$(GO) -C src test -c -o $(BIN)/nft.test ./internal/nft
 	$(GO) -C src test -c -o $(BIN)/platform-linux.test ./internal/platform/linux
 	CGO_ENABLED=0 $(GO) -C src test -c -o $(BIN)/privsep.test ./internal/privsep
@@ -77,7 +80,7 @@ lab-test: build
 	$(LAB_NS) $(BIN)/nft.test -test.v -test.run RealNFT
 	$(LAB_NS) $(BIN)/platform-linux.test -test.v
 	$(LAB_NS) $(BIN)/privsep.test -test.v -test.run 'Privileged|Harden'
-	$(LAB_NS) $(BIN)/lab.test -test.v -test.timeout 5m -susanoo $(BIN)/susanoo
+	$(LAB_NS) $(BIN)/lab.test -test.v -test.timeout 5m -susanoo $(BIN)/susanoo -susanoo-next $(BIN)/susanoo-next
 
 clean:
-	rm -f $(BIN)/susanoo $(BIN)/*.test
+	rm -f $(BIN)/susanoo $(BIN)/susanoo-next $(BIN)/*.test

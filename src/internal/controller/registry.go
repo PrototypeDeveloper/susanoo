@@ -45,6 +45,10 @@ type device struct {
 
 	CertExpiry time.Time `json:"cert_expiry,omitzero"` // 端末が最後に示した証明書の有効期限
 	Revoked    time.Time `json:"revoked,omitzero"`     // 証明書を失効させた時刻
+
+	Software string `json:"software,omitempty"` // CLIENT が報告した版数
+	OS       string `json:"os,omitempty"`       // CLIENT が報告した OS と CPU（リリースのファイルを選ぶ）
+	Arch     string `json:"arch,omitempty"`
 }
 
 func (d *device) view(macs []string) api.Device {
@@ -59,6 +63,7 @@ func (d *device) view(macs []string) api.Device {
 		Reason:    d.Reason,
 		Since:     d.Since,
 		Pending:   d.Pending,
+		Software:  d.Software,
 		Away:      d.Away,
 		Features:  slices.Clone(d.Features),
 

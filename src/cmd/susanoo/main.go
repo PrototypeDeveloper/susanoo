@@ -41,6 +41,8 @@ const (
 	exitOK    = 0
 	exitError = 1
 	exitUsage = 2
+	// exitUpdated は、CLIENT が新しい版に入れ替えて終わったことを表す。systemd などで起動し直す（Restart=always）。
+	exitUpdated = 75
 )
 
 func main() {

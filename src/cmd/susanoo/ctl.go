@@ -53,6 +53,7 @@ const ctlUsage = `使い方: susanoo ctl <操作> [オプション]
   notify   試験の通知を送る（例: susanoo ctl notify test）
   incident インシデントを開く、手順と報告の期限を管理する、時系列と報告書を作る（susanoo ctl incident で説明を表示）
   apps     プロセス単位の通信の制御で拒否した接続を、プログラムと宛先ごとにまとめる（例: susanoo ctl apps learned -since 24h）
+  upgrade  署名したリリースを CLIENT に段階的に配り、入れ替えさせる（susanoo ctl upgrade で説明を表示）
 `
 
 const defaultCtlDir = "/etc/susanoo/controller"
@@ -105,6 +106,8 @@ func runCtl(args []string, stdout, stderr io.Writer) int {
 		return ctlIncident(args[1:], stdout, stderr)
 	case "apps":
 		return ctlApps(args[1:], stdout, stderr)
+	case "upgrade":
+		return ctlUpgrade(args[1:], stdout, stderr)
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, ctlUsage)
 		return exitOK
@@ -231,6 +234,12 @@ func ctlIssue(args []string, stdout, stderr io.Writer) int {
 	if err := fsutil.WriteFileAtomic(filepath.Join(*out, fileCommandPub), signPub, 0o644); err != nil {
 		return fail(stderr, err)
 	}
+	// リリースの目録を確かめる公開鍵（ポリシーの署名の公開鍵）。なければ端末はリリースに入れ替えない。
+	if policyPub, err := os.ReadFile(filepath.Join(*dir, filePolicyPub)); err == nil {
+		if err := fsutil.WriteFileAtomic(filepath.Join(*out, fileReleasePub), policyPub, 0o644); err != nil {
+			return fail(stderr, err)
+		}
+	}
 	fmt.Fprintf(stdout, "端末 %s の証明書を発行しました（有効期限 %s）。\n%s の %s、%s、%s を、端末の鍵のディレクトリに置いてください。\n",
 		*id, cert.NotAfter.Local().Format("2006-01-02"), *out, fileCACert, fileClientCert, fileCommandPub)
 	return exitOK
@@ -252,6 +261,19 @@ func (c *ctlFlags) do(method, path string, body, out any) error {
 
 // doLimit は do と同じだが、応答の大きさの上限と、待つ時間を指定する（脅威情報の一覧など、大きなものに使う）。
 func (c *ctlFlags) doLimit(method, path string, body, out any, limit int64, timeout time.Duration) error {
+	var r io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		r = bytes.NewReader(data)
+	}
+	return c.doRaw(method, path, r, out, limit, timeout)
+}
+
+// doRaw は doLimit と同じだが、本文 r をそのまま送る（リリースの実行ファイルなど）。
+func (c *ctlFlags) doRaw(method, path string, r io.Reader, out any, limit int64, timeout time.Duration) error {
 	pool, err := loadPool(c.dir)
 	if err != nil {
 		return err
@@ -262,14 +284,6 @@ func (c *ctlFlags) doLimit(method, path string, body, out any, limit int64, time
 	}
 	tr := &http.Transport{TLSClientConfig: transport.ClientConfig(pool, cert, pki.RoleController), ForceAttemptHTTP2: true}
 	defer tr.CloseIdleConnections()
-	var r io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		r = bytes.NewReader(data)
-	}
 	req, err := http.NewRequest(method, "https://"+c.server+path, r)
 	if err != nil {
 		return err

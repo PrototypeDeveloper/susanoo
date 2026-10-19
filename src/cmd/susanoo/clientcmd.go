@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -146,6 +147,10 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	releaseKey, err := loadReleaseKey(pkiDir)
+	if err != nil {
+		return fail(stderr, err)
+	}
 	commandKey, err := loadCommandKey(pkiDir)
 	if err != nil {
 		return fail(stderr, err)
@@ -195,7 +200,12 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 	p := linux.New(pcfg)
 
 	interval := cfg.HeartbeatInterval.Or(client.DefaultHeartbeatInterval)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var updatedTo atomic.Value // 入れ替えたリリースの版数
 	local, err := client.NewLocal(client.LocalConfig{
+		ReleaseKey:    releaseKey,
+		OnUpdate:      func(v string) { updatedTo.Store(v); cancel() },
 		Cert:          cert,
 		CA:            pool,
 		CertPath:      filepath.Join(pkiDir, fileClientCert), // 更新した証明書で置き換える（M1）
@@ -223,6 +233,10 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 		if err == nil {
 			err = agent.Run(ctx)
 		}
+	}
+	if v, ok := updatedTo.Load().(string); ok {
+		log.Info("新しい版に入れ替えたので終わります。起動し直してください", "版数", v)
+		return exitUpdated
 	}
 	if err != nil {
 		return fail(stderr, err)

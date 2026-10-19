@@ -67,6 +67,11 @@ type LocalConfig struct {
 	Platform      platform.Platform
 	Logger        *slog.Logger
 	Now           func() time.Time
+	// ReleaseKey はリリースの目録を確かめる公開鍵（管理者のポリシーの署名の鍵）。nil なら勧められても入れ替えない。
+	ReleaseKey ed25519.PublicKey
+	Executable string               // 入れ替える実行ファイル。空なら今の実行ファイル
+	Version    string               // 今の版数。空ならビルドの版数
+	OnUpdate   func(version string) // 実行ファイルを入れ替えたら呼ぶ（CLIENT を起動し直す）
 }
 
 // state は適用した指示。
@@ -85,6 +90,7 @@ type Local struct {
 	log      *slog.Logger
 	id       pki.Identity
 	leaf     *x509.Certificate // 今の証明書（mu で守る）
+	chain    [][]byte          // 今の証明書の連なり（mu で守る。リリースの受け取りに使う）
 	key      ed25519.PrivateKey
 	signer   *sign.Signer
 	verifier *sign.Verifier
@@ -97,6 +103,11 @@ type Local struct {
 
 	collectMu sync.Mutex // 証拠は 1 つずつ集める
 	fileMu    sync.Mutex // 証拠のファイルを守る
+
+	updMu       sync.Mutex // リリースの入れ替えの状態を守る
+	updating    bool
+	updFailed   map[string]time.Time // 入れ替えに失敗した版数と時刻
+	noKeyWarned bool
 }
 
 var _ Executor = (*Local)(nil)
@@ -144,7 +155,7 @@ func NewLocal(cfg LocalConfig) (*Local, error) {
 	hostname, _ := os.Hostname()
 	return &Local{
 		cfg: cfg, log: cfg.Logger.With("端末", id.ID), id: id, leaf: leaf, key: key, signer: signer, verifier: verifier,
-		bootID: rand.Text(), hostname: hostname, state: st,
+		bootID: rand.Text(), hostname: hostname, state: st, chain: slices.Clone(cfg.Cert.Certificate), updFailed: map[string]time.Time{},
 	}, nil
 }
 
@@ -219,6 +230,7 @@ func (l *Local) Heartbeat(context.Context) (sign.Envelope, error) {
 		Isolation:    l.state.Isolation,
 		AppControl:   l.appControlMode(),
 		Capabilities: l.cfg.Platform.Capabilities(),
+		Version:      l.currentVersion(),
 	})
 	if err != nil {
 		return sign.Envelope{}, err
@@ -238,6 +250,9 @@ func (l *Local) Apply(ctx context.Context, env sign.Envelope) error {
 	}
 	if cmd.DeviceID != l.id.ID {
 		return fmt.Errorf("ほかの端末（%s）への指示です", cmd.DeviceID)
+	}
+	if cmd.Release != nil {
+		l.offerRelease(cmd.Release) // 指示の版数とは別に、勧められるたびに確かめる
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -360,7 +375,7 @@ func (l *Local) RenewCert(_ context.Context, chainDER [][]byte) error {
 			return err
 		}
 	}
-	l.leaf = cert
+	l.leaf, l.chain = cert, chainDER
 	l.log.Info("端末の証明書を更新しました", "期限", cert.NotAfter.Local().Format(time.DateTime))
 	return nil
 }
