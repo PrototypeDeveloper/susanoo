@@ -41,6 +41,8 @@ var Defaults = []Rule{
 	{ID: "privilege-escalation", Name: "権限昇格", Finding: event.FindingTypePrivilegeEscalation, Mode: ModeMonitor, Score: 20},
 	{ID: "credential-access", Name: "認証情報へのアクセス", Finding: event.FindingTypeCredentialAccess, Mode: ModeMonitor, Score: 50},
 	{ID: "kernel-module", Name: "カーネルモジュールの読み込み", Finding: event.FindingTypeKernelModule, Mode: ModeMonitor, Score: 30},
+	// プロセス単位の通信の制御（C7）で拒否した（試験運用なら拒否に当たった）接続。ポリシーで決めた通りの拒否なので点は小さい。
+	{ID: "app-control", Name: "アプリの通信の拒否", Finding: event.FindingTypeAppControl, Mode: ModeMonitor, Score: 10},
 
 	// 不審な親子関係（C8。T2 脆弱性の悪用、T1 細工した文書やページ）。CLIENT のプロセスの起動のイベントの条件で検知する。
 	{ID: "shell-from-service", Name: "サービスのプロセスからのシェルの起動", Class: "process", Mode: ModeMonitor, Score: 60, Severity: event.SeverityHigh,
@@ -67,9 +69,10 @@ var Defaults = []Rule{
 		Description: "AI エージェントの配下のプロセスが、sudo などで権限を得ようとした（プロンプトインジェクションで操られた疑い）",
 		Match:       all(exists("unmapped.agent.name"), fileNameIn("sudo", "su", "pkexec", "doas"))},
 	{ID: "agent-sensitive-action", Name: "AI エージェントによる要注意の操作", Class: "finding", Mode: ModeMonitor, Score: 50, Severity: event.SeverityHigh,
-		Description: "AI エージェントの配下のプロセスが、永続化や権限の設定の変更、権限昇格、認証情報の読み取り、おとりへの接触、大量の変更をした",
+		Description: "AI エージェントの配下のプロセスが、永続化や権限の設定の変更、権限昇格、認証情報の読み取り、おとりへの接触、大量の変更、許可していない宛先への接続をした",
 		Match: all(exists("unmapped.agent.name"), in("finding_info.types", event.FindingTypePersistence, event.FindingTypePrivilegeChange,
-			event.FindingTypePrivilegeEscalation, event.FindingTypeCredentialAccess, event.FindingTypeHoneytoken, event.FindingTypeMassChange))},
+			event.FindingTypePrivilegeEscalation, event.FindingTypeCredentialAccess, event.FindingTypeHoneytoken, event.FindingTypeMassChange,
+			event.FindingTypeAppControl))},
 }
 
 // 条件のルールで使う名前。

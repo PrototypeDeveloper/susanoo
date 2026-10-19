@@ -133,6 +133,7 @@ func (c *Controller) heartbeat(w http.ResponseWriter, r *http.Request, id pki.Id
 	d.Hostname = hb.Hostname
 	d.Features = slices.Clone(hb.Capabilities.Features)
 	d.Applied, d.AppliedVersion = hb.Isolation, hb.Applied
+	d.AppControl = hb.AppControl
 	cert := r.TLS.PeerCertificates[0]
 	d.CertExpiry = cert.NotAfter
 	if !d.Revoked.IsZero() && pki.IssuedAt(cert).After(d.Revoked) {

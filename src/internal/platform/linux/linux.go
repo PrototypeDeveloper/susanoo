@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/netip"
 	"os"
 	"runtime"
 	"sync"
@@ -70,6 +71,7 @@ type Config struct {
 	ModulePoll    time.Duration      // カーネルモジュールの一覧を読む間隔。既定 10 秒
 	Agents        []AgentSpec        // 見分ける AI エージェント。nil なら DefaultAgents、空なら見分けない
 	EvidenceLogs  []string           // 証拠として末尾を集めるログ。nil なら DefaultEvidenceLogs、空なら集めない
+	AppControl    bool               // プロセス単位の通信の制御（C7）を使う（NFT が必要）
 	Logger        *slog.Logger
 	Now           func() time.Time
 }
@@ -87,6 +89,8 @@ type Platform struct {
 	sources  map[platform.Capability]func() (source, error)
 	procs    *procCache
 	agents   *agentMatcher
+	apps     *appFirewall      // プロセス単位の通信の制御（使えなければ nil）
+	extra    chan *event.Event // 監視の仕組みの外から出る検知結果（プロセス単位の通信の制御）
 	hostname string
 	self     int
 }
@@ -104,7 +108,8 @@ func New(cfg Config) *Platform {
 	if cfg.Agents == nil {
 		cfg.Agents = DefaultAgents()
 	}
-	p := &Platform{cfg: cfg, self: os.Getpid(), sources: map[platform.Capability]func() (source, error){}, procs: newProcCache(), agents: newAgentMatcher(cfg.Agents)}
+	p := &Platform{cfg: cfg, self: os.Getpid(), sources: map[platform.Capability]func() (source, error){}, procs: newProcCache(), agents: newAgentMatcher(cfg.Agents),
+		extra: make(chan *event.Event, 256)}
 	p.hostname, _ = os.Hostname()
 	p.caps = platform.Capabilities{OS: runtime.GOOS, Arch: runtime.GOARCH, Kernel: kernelRelease()}
 
@@ -148,6 +153,10 @@ func New(cfg Config) *Platform {
 	}
 	if cfg.NFT != nil && os.Geteuid() == 0 {
 		p.caps.Features = append(p.caps.Features, platform.CapIsolation)
+		if cfg.AppControl {
+			p.apps = newAppFirewall(cfg.NFT, p.procs, p.agents, p.extra, cfg.Logger)
+			p.caps.Features = append(p.caps.Features, platform.CapAppControl)
+		}
 	}
 	if err := evidenceLogsValid(cfg.EvidenceLogs); err != nil {
 		cfg.Logger.Warn(err.Error())
@@ -158,6 +167,16 @@ func New(cfg Config) *Platform {
 }
 
 var _ platform.Collector = (*Platform)(nil)
+
+var _ platform.AppFirewall = (*Platform)(nil)
+
+// SetAppControl はプロセス単位の通信の制御のルールを置き換える（platform.AppFirewall）。
+func (p *Platform) SetAppControl(ctx context.Context, ac *policy.AppControl, exempt []netip.Addr) error {
+	if p.apps == nil {
+		return errors.New("linux: プロセス単位の通信の制御は使えません（root と nft が必要です）")
+	}
+	return p.apps.set(ctx, ac, exempt)
+}
 
 func (p *Platform) paths() []string {
 	paths := make([]string, len(p.cfg.Tokens))
@@ -194,6 +213,16 @@ func (p *Platform) Watch(ctx context.Context, out chan<- event.Event) error {
 	if p.newWatch != nil {
 		start("おとりの監視", func(ctx context.Context) error { return p.watchHoneytokens(ctx, emit) })
 	}
+	start("監視の外からの検知結果", func(ctx context.Context) error {
+		for {
+			select {
+			case e := <-p.extra:
+				emit(e)
+			case <-ctx.Done():
+				return nil
+			}
+		}
+	})
 	for feature, open := range p.sources {
 		s, err := open()
 		if err != nil {

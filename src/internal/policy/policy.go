@@ -75,6 +75,7 @@ type Group struct {
 	RequireApproval bool           `json:"require_approval,omitempty"` // 隔離に人の承認を必須にする（M6）
 	RiskThreshold   int            `json:"risk_threshold,omitempty"`   // 自動対応する危険度（M5）。省略すると DefaultRiskThreshold
 	Bypass          Bypass         `json:"bypass,omitzero"`            // 抜け道の遮断の例外（G4）
+	Apps            *AppControl    `json:"apps,omitempty"`             // プロセス単位の通信の制御（C7。端末の CLIENT が行う）
 }
 
 // Bypass は抜け道の遮断（G4）の例外。省略するとすべて遮断する。
@@ -266,6 +267,11 @@ func (p *Policy) Validate() error {
 		for j, d := range g.Updates {
 			if err := d.validate(); err != nil {
 				add("%s.updates[%d]: %v", where, j, err)
+			}
+		}
+		if g.Apps != nil {
+			if err := g.Apps.validate(); err != nil {
+				add("%s: %v", where, err)
 			}
 		}
 	}

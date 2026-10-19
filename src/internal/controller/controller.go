@@ -17,8 +17,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -598,16 +600,35 @@ func (c *Controller) ReportChange(path string) {
 }
 
 // commandLocked は端末への署名付きの指示を作る。
+//
+// 端末のグループのプロセス単位の通信の制御（C7）も入れる。ポリシーの配布、先行適用、グループの変更で制御が変わったら、
+// 版数を上げて、CLIENT に適用させる。
 func (c *Controller) commandLocked(d *device) (sign.Envelope, error) {
-	cmd := api.Command{DeviceID: d.ID, Version: d.Version, Isolation: d.Isolation, Evidence: d.Evidence, IssuedAt: c.now().UTC()}
+	g := c.groupLocked(d.Group, c.deviceCanaryLocked(d))
+	if h := appsHash(g.Apps); h != d.AppsHash {
+		d.AppsHash = h
+		d.Version = nextVersion(d.Version, c.now())
+		c.saveLocked()
+	}
+	cmd := api.Command{DeviceID: d.ID, Version: d.Version, Isolation: d.Isolation, Evidence: d.Evidence, Apps: g.Apps, IssuedAt: c.now().UTC()}
 	if d.Isolation == policy.IsolateManagementAndUpdates {
-		cmd.Updates = c.groupLocked(d.Group, c.deviceCanaryLocked(d)).UpdatePrefixes()
+		cmd.Updates = g.UpdatePrefixes()
 	}
 	payload, err := json.Marshal(cmd)
 	if err != nil {
 		return sign.Envelope{}, err
 	}
 	return c.cfg.Signer.Sign(sign.PurposeCommand, payload), nil
+}
+
+// appsHash はプロセス単位の通信の制御のハッシュを返す（なければ空）。
+func appsHash(a *policy.AppControl) string {
+	if a == nil {
+		return ""
+	}
+	data, _ := json.Marshal(a)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // ensureLocked は端末を台帳から返す。なければ載せる。

@@ -33,7 +33,8 @@ func TestScriptsWithRealNFT(t *testing.T) {
 		"CLIENT の自己隔離（IPv6 と更新サーバー）": ClientIsolation{
 			Management: []netip.AddrPort{mgmt4, mgmt6}, Updates: []netip.Prefix{up4, up6}, AllowDHCP: true,
 		}.Script,
-		"GW の遮断（空）": GWIsolation{ManagementPort: 8443}.Script,
+		"GW の遮断（空）":            GWIsolation{ManagementPort: 8443}.Script,
+		"CLIENT のプロセス単位の通信の制御": AppControl{Queue: AppsQueue, Exempt: []netip.Addr{mgmt4.Addr(), mgmt6.Addr()}}.Script,
 		"GW の遮断（全段階）": GWIsolation{
 			ManagementPort: 8443,
 			MACs: map[string]policy.IsolationLevel{

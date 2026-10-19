@@ -17,7 +17,35 @@
       "isolation": "management_and_updates",
       "updates": [
         { "domain": "*.ubuntu.com", "ports": [80, 443], "protocol": "tcp" }
-      ]
+      ],
+      "apps": {
+        "mode": "monitor",
+        "default": "allow",
+        "rules": [
+          {
+            "name": "AI エージェントは使うサービスの API だけ",
+            "agents": ["claude"],
+            "dst": [{ "domain": "api.anthropic.com", "ports": [443], "protocol": "tcp" }],
+            "action": "allow"
+          },
+          {
+            "name": "AI エージェントのほかの通信",
+            "agents": ["*"],
+            "action": "deny"
+          },
+          {
+            "name": "ファイルの転送の道具は社内だけ",
+            "names": ["rclone", "scp", "sftp", "ftp"],
+            "dst": [{ "cidr": "192.168.10.0/24" }],
+            "action": "allow"
+          },
+          {
+            "name": "ファイルの転送の道具のほかの通信",
+            "names": ["rclone", "scp", "sftp", "ftp"],
+            "action": "deny"
+          }
+        ]
+      }
     },
     {
       "name": "server",

@@ -120,11 +120,22 @@ func TestConnMonitor(t *testing.T) {
 		return e.DstEndpoint != nil && e.DstEndpoint.Port == int(local.Port()) && e.Connection.DirectionID == 1
 	})
 
-	// 同じ接続は 2 回記録しない。
-	n := len(col.evs)
+	// 同じ接続は 2 回記録しない。ホストのほかのプログラムのループバックの接続も記録されるので、試験の接続だけを数える。
+	mine := func() int {
+		col.mu.Lock()
+		defer col.mu.Unlock()
+		n := 0
+		for _, e := range col.evs {
+			if (e.SrcEndpoint != nil && e.SrcEndpoint.Port == int(local.Port())) || (e.DstEndpoint != nil && e.DstEndpoint.Port == int(local.Port())) {
+				n++
+			}
+		}
+		return n
+	}
+	n := mine()
 	m.poll(time.Now(), col.emit)
-	if len(col.evs) != n {
-		t.Error("同じ接続を 2 回記録した")
+	if got := mine(); got != n {
+		t.Errorf("同じ接続を 2 回記録した（%d 件 → %d 件）", n, got)
 	}
 }
 
@@ -289,6 +300,44 @@ func TestExecMonitorWhenPrivileged(t *testing.T) {
 	col.find(t, "終了", func(e *event.Event) bool {
 		return e.ClassUID == event.ClassProcessActivity && e.ActivityID == event.ProcessTerminate && e.Process.PID == pid
 	})
+	// 動的リンクのプログラムでも、動的リンカーを別の起動として記録しない。
+	col.mu.Lock()
+	for _, e := range col.evs {
+		if launchOf(e) && e.Process.PID == pid && e.Process.File != nil && strings.Contains(e.Process.File.Path, "ld-linux") {
+			t.Errorf("動的リンカーを起動として記録した: %+v", e.Process)
+		}
+	}
+	col.mu.Unlock()
+}
+
+// 動的リンカーの形（ET_DYN で PT_INTERP を持たない）を見分ける。
+func TestDynamicLoader(t *testing.T) {
+	for path, want := range map[string]bool{"/lib64/ld-linux-x86-64.so.2": true, "/lib/ld-linux-aarch64.so.1": true, "/usr/bin/bash": false, "/etc/hostname": false} {
+		f, err := os.Open(path)
+		if err != nil {
+			continue // このアーキテクチャにない
+		}
+		if got := dynamicLoader(int(f.Fd())); got != want {
+			t.Errorf("%s = %v", path, got)
+		}
+		f.Close()
+	}
+	m := &execMonitor{lastExec: map[int]time.Time{}}
+	loader, err := os.Open("/lib64/ld-linux-x86-64.so.2")
+	if err != nil {
+		t.Skip("x86_64 の動的リンカーがない")
+	}
+	defer loader.Close()
+	now := time.Now()
+	if m.loaderOfRecentExec(100, int(loader.Fd()), now) {
+		t.Error("直前の実行がないのに動的リンカーのイベントを捨てた（動的リンカーを直接動かした場合は記録する）")
+	}
+	if !m.loaderOfRecentExec(100, int(loader.Fd()), now.Add(10*time.Millisecond)) {
+		t.Error("本体に続く動的リンカーのイベントを捨てない")
+	}
+	if m.loaderOfRecentExec(101, int(loader.Fd()), now.Add(2*time.Second)) {
+		t.Error("別のプロセスの動的リンカーのイベントを捨てた")
+	}
 }
 
 // launchOf はプロセスの起動のイベントかを返す。検知結果（FindingCreate）も activity_id が 1 なので、クラスで見分ける。

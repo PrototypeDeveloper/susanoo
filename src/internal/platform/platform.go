@@ -1,7 +1,8 @@
 // Package platform は CLIENT が使う OS の機能を抽象化する Platform インターフェースを定める。
 //
 // OS ごとに使える機能の差は Capabilities として申告し（C12）、CONTROLLER はそれを見て
-// 端末ごとに期待できる検知と対応を判断する。プロセス単位の通信制御（C7）は v1 で追加する。
+// 端末ごとに期待できる検知と対応を判断する。証拠の保全（C11）とプロセス単位の通信制御（C7）は、
+// それぞれ Collector と AppFirewall を満たす Platform だけが行う。
 // GW の通信制御は Linux の nftables に固有のため、このインターフェースには含めない。
 package platform
 
@@ -25,7 +26,14 @@ const (
 	CapIsolation     Capability = "isolation"      // ホストのファイアウォールによる自己隔離（C6）
 	CapKernelModules Capability = "kernel_modules" // カーネルモジュールの読み込みの監視（C4）
 	CapEvidence      Capability = "evidence"       // 隔離のときの証拠の保全（C11）
+	CapAppControl    Capability = "app_control"    // プロセス単位の通信の制御（C7）
 )
+
+// AppFirewall はプロセス単位の通信の制御（C7）ができる Platform。
+type AppFirewall interface {
+	// SetAppControl は制御のルールを置き換える。ac が nil なら制御をやめる。exempt の宛先（CONTROLLER など）は制御しない。
+	SetAppControl(ctx context.Context, ac *policy.AppControl, exempt []netip.Addr) error
+}
 
 // Capabilities は OS と、使える機能の一覧。
 type Capabilities struct {

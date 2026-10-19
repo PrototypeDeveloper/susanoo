@@ -5,6 +5,7 @@ package linux
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -59,6 +60,7 @@ type execMonitor struct {
 	overflow overflowLog
 
 	mu          sync.Mutex
+	lastExec    map[int]time.Time // プロセスごとの最後の実行のイベント（動的リンカーのイベントを見分ける）
 	tracked     map[int]tracked
 	escalations map[int]time.Time // 権限昇格の元のプロセスの PID と、検知した時刻
 }
@@ -134,6 +136,7 @@ func newExecMonitor(procs *procCache, agents *agentMatcher, log *slog.Logger) (*
 	return &execMonitor{
 		f: os.NewFile(uintptr(fd), "fanotify-exec"), hasher: newHasher(), hashing: make(chan struct{}, maxHashing), self: os.Getpid(),
 		limiter: newLimiter(100, 500), log: log, procs: procs, agents: agents, tracked: map[int]tracked{}, escalations: map[int]time.Time{},
+		lastExec: map[int]time.Time{},
 	}, nil
 }
 
@@ -160,7 +163,16 @@ func (m *execMonitor) run(ctx context.Context, emit func(*event.Event)) error {
 			}
 			path, _ := os.Readlink(fmt.Sprintf("/proc/self/fd/%d", ev.fd))
 			pid := int(ev.pid)
-			if ev.mask&fanOpenExec == 0 || pid == m.self || !m.limiter.allow(time.Now()) {
+			if ev.mask&fanOpenExec == 0 || pid == m.self {
+				syscall.Close(int(ev.fd))
+				continue
+			}
+			// 本体に続いて届く動的リンカーのイベントは、別の起動として記録しない。
+			if pid > 0 && m.loaderOfRecentExec(pid, int(ev.fd), time.Now()) {
+				syscall.Close(int(ev.fd))
+				continue
+			}
+			if !m.limiter.allow(time.Now()) {
 				syscall.Close(int(ev.fd))
 				continue
 			}
@@ -348,4 +360,66 @@ func startTime(pid int) (uint64, bool) {
 	}
 	v, err := strconv.ParseUint(fields[19], 10, 64)
 	return v, err == nil
+}
+
+// loaderWindow の間に同じプロセスの実行のイベントがあれば、動的リンカーのイベントは本体の実行の一部とみなす。
+const loaderWindow = time.Second
+
+// dynamicLoader は、開いた実行ファイル fd が動的リンカー（ld-linux など）の形かを返す。カーネルは動的リンクの
+// プログラムを実行するとき、本体に続けて動的リンカーも実行のために開くので、FAN_OPEN_EXEC が 2 回届く。
+// 動的リンカーは、ほかのプログラムと違って ET_DYN で PT_INTERP（動的リンカーの指定）を持たない。
+func dynamicLoader(fd int) bool {
+	var h [64]byte
+	if n, _ := syscall.Pread(fd, h[:], 0); n < 52 || string(h[:4]) != "\x7fELF" {
+		return false
+	}
+	var bo binary.ByteOrder = binary.LittleEndian
+	if h[5] == 2 {
+		bo = binary.BigEndian
+	}
+	if bo.Uint16(h[16:18]) != 3 { // ET_DYN
+		return false
+	}
+	var phoff int64
+	var phentsize, phnum int
+	switch h[4] {
+	case 2: // 64 ビット
+		phoff, phentsize, phnum = int64(bo.Uint64(h[32:40])), int(bo.Uint16(h[54:56])), int(bo.Uint16(h[56:58]))
+	case 1: // 32 ビット
+		phoff, phentsize, phnum = int64(bo.Uint32(h[28:32])), int(bo.Uint16(h[42:44])), int(bo.Uint16(h[44:46]))
+	default:
+		return false
+	}
+	if phentsize < 4 || phnum <= 0 || phnum > 512 {
+		return false
+	}
+	ph := make([]byte, phentsize*phnum)
+	if n, _ := syscall.Pread(fd, ph, phoff); n != len(ph) {
+		return false
+	}
+	for i := range phnum {
+		if bo.Uint32(ph[i*phentsize:]) == 3 { // PT_INTERP
+			return false
+		}
+	}
+	return true
+}
+
+// loaderOfRecentExec は、pid の実行のイベントが動的リンカーのもので、直前に同じプロセスの実行のイベントがあったかを返す。
+// そうでなければ、このイベントを pid の最後の実行として覚える。
+func (m *execMonitor) loaderOfRecentExec(pid, fd int, now time.Time) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if t, ok := m.lastExec[pid]; ok && now.Sub(t) < loaderWindow && dynamicLoader(fd) {
+		return true
+	}
+	if len(m.lastExec) > 4096 {
+		for p, t := range m.lastExec {
+			if now.Sub(t) >= loaderWindow {
+				delete(m.lastExec, p)
+			}
+		}
+	}
+	m.lastExec[pid] = now
+	return false
 }

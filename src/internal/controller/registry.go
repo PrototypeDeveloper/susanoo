@@ -34,11 +34,14 @@ type device struct {
 	Isolation policy.IsolationLevel `json:"isolation,omitempty"` // 指示している隔離
 	Reason    string                `json:"reason,omitempty"`
 	Since     time.Time             `json:"since,omitzero"`
-	Version   uint64                `json:"version,omitempty"`  // 指示の版数
-	Evidence  uint64                `json:"evidence,omitempty"` // 証拠を集める要求の番号（C11）
-	Pending   string                `json:"pending,omitempty"`  // 承認待ちの隔離の理由
-	Lost      bool                  `json:"lost,omitempty"`     // ハートビートの途絶を検知済み
-	Away      bool                  `json:"away,omitempty"`     // ハートビートが途絶え、LAN にもいない（不在）
+	Version   uint64                `json:"version,omitempty"`   // 指示の版数
+	Evidence  uint64                `json:"evidence,omitempty"`  // 証拠を集める要求の番号（C11）
+	AppsHash  string                `json:"apps_hash,omitempty"` // 最後に指示に入れたプロセス単位の通信の制御のハッシュ（変わったら版数を上げる）
+
+	AppControl policy.AppMode `json:"app_control,omitempty"` // CLIENT が報告した、効いているプロセス単位の通信の制御の扱い（C7）
+	Pending    string         `json:"pending,omitempty"`     // 承認待ちの隔離の理由
+	Lost       bool           `json:"lost,omitempty"`        // ハートビートの途絶を検知済み
+	Away       bool           `json:"away,omitempty"`        // ハートビートが途絶え、LAN にもいない（不在）
 
 	CertExpiry time.Time `json:"cert_expiry,omitzero"` // 端末が最後に示した証明書の有効期限
 	Revoked    time.Time `json:"revoked,omitzero"`     // 証明書を失効させた時刻
@@ -61,6 +64,7 @@ func (d *device) view(macs []string) api.Device {
 
 		CertExpiry: d.CertExpiry,
 		Revoked:    d.Revoked,
+		AppControl: d.AppControl,
 	}
 	if v.Group == "" {
 		v.Group = policy.DefaultGroup

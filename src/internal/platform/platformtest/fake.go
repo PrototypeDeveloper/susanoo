@@ -4,20 +4,26 @@ package platformtest
 
 import (
 	"context"
+	"net/netip"
+	"slices"
 	"sync"
 
 	"susanoo/internal/event"
 	"susanoo/internal/platform"
+	"susanoo/internal/policy"
 )
 
 // Fake は試験用の Platform。
 type Fake struct {
-	Caps   platform.Capabilities
-	events chan event.Event
+	Caps    platform.Capabilities
+	AppsErr error // SetAppControl が返すエラー（試験用）
+	events  chan event.Event
 
-	mu       sync.Mutex
-	isolated *platform.Isolation
-	history  []string
+	mu         sync.Mutex
+	isolated   *platform.Isolation
+	history    []string
+	apps       *policy.AppControl
+	appsExempt []netip.Addr
 }
 
 var _ platform.Platform = (*Fake)(nil)
@@ -107,6 +113,31 @@ func (f *Fake) Snapshot(ctx context.Context) (*platform.Snapshot, error) {
 }
 
 var _ platform.Collector = (*Fake)(nil)
+
+// SetAppControl はプロセス単位の通信の制御を記録する（platform.AppFirewall）。
+func (f *Fake) SetAppControl(_ context.Context, ac *policy.AppControl, exempt []netip.Addr) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.AppsErr != nil {
+		return f.AppsErr
+	}
+	f.apps, f.appsExempt = ac, slices.Clone(exempt)
+	if ac == nil {
+		f.history = append(f.history, "apps:off")
+	} else {
+		f.history = append(f.history, "apps:"+string(ac.Mode))
+	}
+	return nil
+}
+
+// Apps は今のプロセス単位の通信の制御と、制御しない宛先を返す。
+func (f *Fake) Apps() (*policy.AppControl, []netip.Addr) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.apps, slices.Clone(f.appsExempt)
+}
+
+var _ platform.AppFirewall = (*Fake)(nil)
 
 // History は受けた指示の履歴を返す。
 func (f *Fake) History() []string {

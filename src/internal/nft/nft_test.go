@@ -431,3 +431,30 @@ func TestMergePrefixesLarge(t *testing.T) {
 		t.Errorf("重なりを除いた範囲 = %d 個", len(got))
 	}
 }
+
+func TestAppControlScript(t *testing.T) {
+	s, err := AppControl{Queue: 4242, Exempt: []netip.Addr{netip.MustParseAddr("10.77.0.1"), netip.MustParseAddr("fd00::1"), netip.MustParseAddr("10.77.0.1")}}.Script()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"table inet susanoo_apps {}\ndelete table inet susanoo_apps\n",
+		"meta mark 0x53550001 meta l4proto tcp reject with tcp reset",
+		`oif "lo" accept`,
+		"ip daddr { 10.77.0.1 } accept",
+		"ip6 daddr { fd00::1 } accept",
+		"meta l4proto { tcp, udp } ct state new queue num 4242 bypass",
+		"type filter hook output priority 5; policy accept;",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("スクリプトに %q がありません:\n%s", want, s)
+		}
+	}
+	// 拒否の印のルールは、ほかのどのルールより先に評価する（NF_REPEAT で戻したパケットを拒否するため）。
+	if strings.Index(s, "meta mark") > strings.Index(s, `oif "lo"`) {
+		t.Errorf("拒否の印のルールが先頭にない:\n%s", s)
+	}
+	if _, err := (AppControl{}).Script(); err == nil {
+		t.Error("NFQUEUE の番号がないのにスクリプトを作った")
+	}
+}

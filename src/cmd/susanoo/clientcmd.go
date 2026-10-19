@@ -42,6 +42,7 @@ type clientConfig struct {
 	KernelModules     *bool             `json:"kernel_modules"`       // カーネルモジュールの読み込みの検知（C4）。既定 true
 	Agents            []linux.AgentSpec `json:"agents"`               // 見分ける AI エージェント（C9）。省略すると既定の一覧、空（[]）なら見分けない
 	Evidence          *evidenceConfig   `json:"evidence"`             // 証拠の保全（C11）
+	AppControl        *bool             `json:"app_control"`          // プロセス単位の通信の制御（C7。ルールはポリシーのグループの apps）。既定 true
 	Separation        *bool             `json:"privilege_separation"` // 権限の分離（C10）。既定 true（root で動かすとき）
 	User              string            `json:"analyzer_user"`        // 解析部を動かす利用者。既定 nobody
 }
@@ -143,6 +144,7 @@ func runClient(ctx context.Context, args []string, stderr io.Writer) int {
 		Files:         fileSettings(cfg.Files),
 		KernelModules: cfg.KernelModules == nil || *cfg.KernelModules,
 		Agents:        cfg.Agents,
+		AppControl:    cfg.AppControl == nil || *cfg.AppControl,
 		Logger:        log,
 	}
 	if cfg.Evidence != nil {

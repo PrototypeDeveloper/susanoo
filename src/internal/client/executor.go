@@ -76,6 +76,7 @@ type state struct {
 	Updates   []netip.Prefix        `json:"updates,omitempty"`
 	Commanded policy.IsolationLevel `json:"commanded,omitempty"` // 指示された隔離（自己隔離を使えない端末でも記録する。証拠を集めるきっかけの判断に使う）
 	Evidence  uint64                `json:"evidence,omitempty"`  // 応えた証拠の要求の番号
+	Apps      *policy.AppControl    `json:"apps,omitempty"`      // 指示されたプロセス単位の通信の制御（C7）
 }
 
 // Local は同じプロセスで動く執行部。
@@ -166,6 +167,41 @@ func (l *Local) Restore(ctx context.Context) {
 			l.log.Warn("残っている隔離のルールを消せません", "エラー", err)
 		}
 	}
+	if l.state.Apps != nil {
+		if err := l.setApps(ctx, l.state.Apps); err != nil {
+			l.log.Error("前回のプロセス単位の通信の制御を適用し直せません", "エラー", err)
+		} else {
+			l.log.Info("前回の指示に従って、プロセス単位の通信の制御を続けます", "扱い", l.state.Apps.Mode)
+		}
+	}
+}
+
+// setApps はプロセス単位の通信の制御を Platform に渡す（C7）。使えない端末では何もしない。
+func (l *Local) setApps(ctx context.Context, ac *policy.AppControl) error {
+	fw, ok := l.cfg.Platform.(platform.AppFirewall)
+	if !ok || !l.cfg.Platform.Capabilities().Has(platform.CapAppControl) {
+		if ac != nil {
+			l.log.Warn("この端末ではプロセス単位の通信の制御を使えません（GW の外部通信の制御だけが効きます）")
+		}
+		return nil
+	}
+	// CONTROLLER（と同居する GW の DNS）への通信は制御しない（指示を受け取れなくならないように）。
+	return fw.SetAppControl(ctx, ac, []netip.Addr{l.cfg.Controller.Addr()})
+}
+
+// appControlMode は、今効いているプロセス単位の通信の制御の扱いを返す（効いていなければ空）。l.mu を持って呼ぶ。
+func (l *Local) appControlMode() policy.AppMode {
+	if l.state.Apps == nil || !l.cfg.Platform.Capabilities().Has(platform.CapAppControl) {
+		return ""
+	}
+	return l.state.Apps.Mode
+}
+
+// sameApps は 2 つのプロセス単位の通信の制御が同じかを返す。
+func sameApps(a, b *policy.AppControl) bool {
+	x, _ := json.Marshal(a)
+	y, _ := json.Marshal(b)
+	return string(x) == string(y)
 }
 
 // Heartbeat は署名付きのハートビートを作る。状態の項目は執行部が自分の状態で埋める。
@@ -181,6 +217,7 @@ func (l *Local) Heartbeat(context.Context) (sign.Envelope, error) {
 		Hostname:     l.hostname,
 		Applied:      l.state.Version,
 		Isolation:    l.state.Isolation,
+		AppControl:   l.appControlMode(),
 		Capabilities: l.cfg.Platform.Capabilities(),
 	})
 	if err != nil {
@@ -216,10 +253,22 @@ func (l *Local) Apply(ctx context.Context, env sign.Envelope) error {
 	case cmd.Evidence > prev.Evidence:
 		collect = api.EvidenceReasonRequest
 	}
-	next := state{Version: cmd.Version, Isolation: cmd.Isolation, Updates: cmd.Updates, Commanded: cmd.Isolation, Evidence: max(prev.Evidence, cmd.Evidence)}
+	next := state{Version: cmd.Version, Isolation: cmd.Isolation, Updates: cmd.Updates, Commanded: cmd.Isolation, Evidence: max(prev.Evidence, cmd.Evidence), Apps: cmd.Apps}
+	// プロセス単位の通信の制御（C7）は、隔離より先に適用する。失敗したら何も変えずにエラーを返し、次の応答で試し直す。
+	appsChanged := !sameApps(prev.Apps, cmd.Apps)
+	if appsChanged {
+		if err := l.setApps(ctx, cmd.Apps); err != nil {
+			return fmt.Errorf("指示（プロセス単位の通信の制御）を適用できません: %w", err)
+		}
+		if cmd.Apps == nil {
+			l.log.Info("指示に従って、プロセス単位の通信の制御をやめました")
+		} else {
+			l.log.Info("指示に従って、プロセス単位の通信の制御を適用しました", "扱い", cmd.Apps.Mode, "既定", cmd.Apps.Default, "ルール", len(cmd.Apps.Rules))
+		}
+	}
 	if !l.cfg.Platform.Capabilities().Has(platform.CapIsolation) {
 		// 自己隔離を使えない端末は、GW の遮断だけで隔離される。指示の版数だけを記録する。
-		l.state = state{Version: cmd.Version, Commanded: next.Commanded, Evidence: next.Evidence}
+		l.state = state{Version: cmd.Version, Commanded: next.Commanded, Evidence: next.Evidence, Apps: next.Apps}
 		l.save()
 		if cmd.Isolation != "" && prev.Commanded == "" {
 			l.log.Warn("この端末では自己隔離を使えません。GW の遮断で隔離されます", "段階", cmd.Isolation)
@@ -238,6 +287,9 @@ func (l *Local) Apply(ctx context.Context, env sign.Envelope) error {
 	}
 	if err != nil {
 		l.state = prev
+		if appsChanged {
+			l.setApps(ctx, prev.Apps) // 先に適用したプロセス単位の通信の制御も戻す
+		}
 		return fmt.Errorf("指示（隔離 %q）を適用できません: %w", cmd.Isolation, err)
 	}
 	l.save()

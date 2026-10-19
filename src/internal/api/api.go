@@ -75,8 +75,9 @@ type Heartbeat struct {
 	Counter      uint64                `json:"counter"`
 	Time         time.Time             `json:"time"`
 	Hostname     string                `json:"hostname,omitempty"`
-	Applied      uint64                `json:"applied"`             // 適用済みの指示の版数
-	Isolation    policy.IsolationLevel `json:"isolation,omitempty"` // 今の自己隔離の状態（空なら隔離していない）
+	Applied      uint64                `json:"applied"`               // 適用済みの指示の版数
+	Isolation    policy.IsolationLevel `json:"isolation,omitempty"`   // 今の自己隔離の状態（空なら隔離していない）
+	AppControl   policy.AppMode        `json:"app_control,omitempty"` // 効いているプロセス単位の通信の制御の扱い（C7。空なら効いていない）
 	Capabilities platform.Capabilities `json:"capabilities"`
 }
 
@@ -100,6 +101,7 @@ type Command struct {
 	Isolation policy.IsolationLevel `json:"isolation,omitempty"` // 空なら隔離しない
 	Updates   []netip.Prefix        `json:"updates,omitempty"`   // 隔離中も許可する更新サーバー
 	Evidence  uint64                `json:"evidence,omitempty"`  // 証拠を集める要求の番号。適用済みより大きければ集める（C11）
+	Apps      *policy.AppControl    `json:"apps,omitempty"`      // プロセス単位の通信の制御（C7。端末のグループの設定。なければ制御しない）
 	IssuedAt  time.Time             `json:"issued_at"`
 }
 
@@ -276,16 +278,17 @@ type Device struct {
 	Hostname   string                `json:"hostname,omitempty"`
 	MACs       []string              `json:"macs,omitempty"` // 結び付いた LAN の機器
 	LastSeen   time.Time             `json:"last_seen"`
-	Isolation  policy.IsolationLevel `json:"isolation,omitempty"`  // 指示している隔離
-	Applied    policy.IsolationLevel `json:"applied,omitempty"`    // CLIENT が報告した自己隔離の状態
-	Reason     string                `json:"reason,omitempty"`     // 隔離の理由
-	Since      time.Time             `json:"since,omitzero"`       // 隔離した時刻
-	Pending    string                `json:"pending,omitempty"`    // 承認待ちの隔離の理由
-	Away       bool                  `json:"away,omitempty"`       // ハートビートが途絶え、LAN にもいない（不在）
-	Features   []platform.Capability `json:"features,omitempty"`   // CLIENT が申告した機能
-	CertExpiry time.Time             `json:"cert_expiry,omitzero"` // 端末が最後に示した証明書の有効期限
-	Revoked    time.Time             `json:"revoked,omitzero"`     // 証明書を失効させた時刻（それより前に発行した証明書は使えない）
-	Risk       int                   `json:"risk,omitempty"`       // 危険度（M5）
+	Isolation  policy.IsolationLevel `json:"isolation,omitempty"`   // 指示している隔離
+	Applied    policy.IsolationLevel `json:"applied,omitempty"`     // CLIENT が報告した自己隔離の状態
+	Reason     string                `json:"reason,omitempty"`      // 隔離の理由
+	Since      time.Time             `json:"since,omitzero"`        // 隔離した時刻
+	Pending    string                `json:"pending,omitempty"`     // 承認待ちの隔離の理由
+	Away       bool                  `json:"away,omitempty"`        // ハートビートが途絶え、LAN にもいない（不在）
+	Features   []platform.Capability `json:"features,omitempty"`    // CLIENT が申告した機能
+	CertExpiry time.Time             `json:"cert_expiry,omitzero"`  // 端末が最後に示した証明書の有効期限
+	Revoked    time.Time             `json:"revoked,omitzero"`      // 証明書を失効させた時刻（それより前に発行した証明書は使えない）
+	Risk       int                   `json:"risk,omitempty"`        // 危険度（M5）
+	AppControl policy.AppMode        `json:"app_control,omitempty"` // CLIENT が報告した、効いているプロセス単位の通信の制御の扱い（C7）
 }
 
 // CertificateResponse は更新した証明書。

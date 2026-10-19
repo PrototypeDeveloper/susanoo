@@ -607,3 +607,29 @@ func withoutIncidentOpen(actions []string) ([]string, int) {
 	})
 	return out, n
 }
+
+// 指示には端末のグループのプロセス単位の通信の制御が入り、グループが変わって制御が変わると版数が上がる（C7）。
+func TestCommandCarriesAppControl(t *testing.T) {
+	pol := testPolicy(policy.ResponseEnforce, false)
+	pol.Groups[0].Apps = &policy.AppControl{Mode: policy.AppEnforce, Default: policy.AppAllow, Rules: []policy.AppRule{
+		{Name: "AI エージェントのほか", Agents: []string{"*"}, Action: policy.AppDeny},
+	}}
+	pol.Groups = append(pol.Groups, policy.Group{Name: "server", Egress: policy.Egress{Default: policy.EgressAllow}, Isolation: policy.IsolateManagement})
+	f := start(t, pkitest.New(t), t.TempDir(), pol)
+	pc := f.peer(pki.RoleClient, "pc-001")
+	admin := f.peer(pki.RoleAdmin, "admin")
+	_, first := pc.heartbeat()
+	if first.Apps == nil || first.Apps.Mode != policy.AppEnforce || first.Version == 0 {
+		t.Fatalf("最初の指示 = %+v", first)
+	}
+	if _, again := pc.heartbeat(); again.Version != first.Version {
+		t.Errorf("制御が変わらないのに版数が上がった: %d → %d", first.Version, again.Version)
+	}
+	if status, body := admin.do(http.MethodPost, api.PathDevices+"/pc-001/group", api.GroupRequest{Group: "server"}); status != http.StatusOK {
+		t.Fatalf("グループの変更 = %d %s", status, body)
+	}
+	f.clock.advance(time.Second)
+	if _, moved := pc.heartbeat(); moved.Apps != nil || moved.Version <= first.Version {
+		t.Errorf("グループを変えた後の指示 = %+v（前の版数 %d）", moved, first.Version)
+	}
+}
