@@ -43,6 +43,7 @@ func (c *Controller) Handler() http.Handler {
 	mux.Handle("POST "+api.PathCertificate, c.require(pki.RoleClient, c.renewCertificate))
 	mux.Handle("POST "+api.PathDevices+"/{id}/revoke", c.require(pki.RoleAdmin, c.revokeDevice))
 	mux.Handle("GET "+api.PathAdmins, c.require(pki.RoleAdmin, c.listAdmins))
+	mux.Handle("GET "+api.PathTrial, c.require(pki.RoleAdmin, c.trialReport))
 	mux.Handle("POST "+api.PathAdmins+"/{id}/revoke", c.require(pki.RoleAdmin, c.revokeAdmin))
 	mux.Handle("GET "+api.PathStatus, c.require(pki.RoleAdmin, c.getStatus))
 	mux.Handle("GET "+api.PathEvents, c.require(pki.RoleAdmin, c.searchEvents))

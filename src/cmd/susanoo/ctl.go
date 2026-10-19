@@ -57,6 +57,8 @@ const ctlUsage = `使い方: susanoo ctl <操作> [オプション]
   incident インシデントを開く、手順と報告の期限を管理する、時系列と報告書を作る（susanoo ctl incident で説明を表示）
   apps     プロセス単位の通信の制御で拒否した接続を、プログラムと宛先ごとにまとめる（例: susanoo ctl apps learned -since 24h）
   upgrade  署名したリリースを CLIENT に段階的に配り、入れ替えさせる（susanoo ctl upgrade で説明を表示）
+  trial    学習モードの試行を評価する。保存したイベントを今の検知ルールと例外で評価し直し、端末ごとに隔離していた回数を
+           基準と比べる（例: susanoo ctl trial -since 14d）
 `
 
 const defaultCtlDir = "/etc/susanoo/controller"
@@ -93,6 +95,8 @@ func runCtl(args []string, stdout, stderr io.Writer) int {
 		return ctlAdmin(args[1:], stdout, stderr)
 	case "ca":
 		return ctlCA(args[1:], stdout, stderr)
+	case "trial":
+		return ctlTrial(args[1:], stdout, stderr)
 	case "audit":
 		return ctlAudit(args[1:], stdout, stderr)
 	case "group":

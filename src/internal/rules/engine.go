@@ -62,6 +62,22 @@ func (e *Engine) Behavior() behavior.Config {
 	return e.Set.Behavior
 }
 
+// Classes は、評価する種類（条件のルールのある種類と、検知結果のルールがあれば検知結果）を返す。
+// 保存したイベントを評価し直すとき、解析する前に行を絞り込むのに使う。
+func (e *Engine) Classes() []event.ClassUID {
+	var out []event.ClassUID
+	for c, rs := range e.byClass {
+		if len(rs) > 0 {
+			out = append(out, c)
+		}
+	}
+	if len(e.byFinding) > 0 && !slices.Contains(out, event.ClassDetectionFinding) {
+		out = append(out, event.ClassDetectionFinding)
+	}
+	slices.Sort(out)
+	return out
+}
+
 // Relevant は、イベントに関係しうるルールがあるかを返す（なければ評価を省く）。
 func (e *Engine) Relevant(ev *event.Event) bool {
 	if len(e.byClass[ev.ClassUID]) > 0 {

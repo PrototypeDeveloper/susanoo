@@ -6,7 +6,6 @@ susanoo は、ネットワークの関所（GW）と端末の監視（CLIENT）�
 
 - **公開の Issue やプルリクエストには書かないでください。**
 - このリポジトリの GitHub の「Security」タブの「Report a vulnerability」（非公開の脆弱性の報告）から送ってください。報告者と開発者だけが見られます。
-- 日本の「情報セキュリティ早期警戒パートナーシップ」に沿って、IPA（独立行政法人情報処理推進機構）に届け出ることもできます。その場合は、JPCERT/CC が開発者との調整を行います。開発者は、この枠組みでの調整に応じます。
 
 報告には、分かる範囲で次のことを書いてください。
 
@@ -23,7 +22,7 @@ susanoo は、ネットワークの関所（GW）と端末の監視（CLIENT）�
 | 影響の評価と、修正の方針の連絡 | 30 日以内 |
 | 修正した版の公開 | 原則として報告から 90 日以内 |
 
-修正した版を公開するまでは、内容を公表しないようお願いします。公表の時期は、報告者（と JPCERT/CC）と相談して決めます。修正した版の公開と同時に、影響、対象の版、回避策をリリースの説明に書き、報告者の希望に応じて謝辞を載せます。
+修正した版を公開するまでは、内容を公表しないようお願いします。公表の時期は、報告者と相談して決めます。修正した版の公開と同時に、影響、対象の版、回避策をリリースの説明に書き、報告者の希望に応じて謝辞を載せます。
 
 ## 対象
 
@@ -45,4 +44,4 @@ susanoo は、ネットワークの関所（GW）と端末の監視（CLIENT）�
 
 ## Reporting a vulnerability (English)
 
-Please do not open a public issue. Report vulnerabilities privately through GitHub's "Report a vulnerability" button in the Security tab of this repository. Reports through IPA / JPCERT/CC (the Information Security Early Warning Partnership in Japan) are also welcome. We aim to acknowledge reports within 5 business days, share an assessment within 30 days, and release a fix within 90 days. Please keep the details confidential until a fixed version is released. Only the latest 0.x version receives fixes.
+Please do not open a public issue. Report vulnerabilities privately through GitHub's "Report a vulnerability" button in the Security tab of this repository. We aim to acknowledge reports within 5 business days, share an assessment within 30 days, and release a fix within 90 days. Please keep the details confidential until a fixed version is released. Only the latest 0.x version receives fixes.

@@ -336,6 +336,7 @@ const (
 	FindingTypeUnlistedSNI         = "unlisted_sni"         // 許可リストのグループの機器が、許可した名前のアドレス経由で許可していない名前（SNI か Host）に接続した（G6）
 	FindingTypeLearnAnomaly        = "learn_anomaly"        // DNS で得たアドレスの許可への追加を断った（DNS リバインディングか、LAN 側の処理の乗っ取りの疑い）
 	FindingTypeObservationMismatch = "observation_mismatch" // LAN 側の処理の知らせが、ほかの情報と食い違う（LAN 側の処理の乗っ取りの疑い）
+	FindingTypeWouldIsolate        = "would_isolate"        // 隔離が必要な検知があったが、ポリシーの対応の方式（監視、警告）のために隔離しなかった（試行の評価に使う）
 )
 
 // HasType は検知の種類に t が含まれるかどうかを返す。

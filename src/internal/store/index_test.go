@@ -177,3 +177,48 @@ func TestIndexPruned(t *testing.T) {
 		t.Error("古いファイルの索引が消えていません")
 	}
 }
+
+// Scan は、日付のファイルをまたいで、古い順にすべての行を渡す。索引で合い得ないブロックは読まず、fn が false を返したらやめる。
+func TestScan(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "events")
+	s, c := openIndexed(t, dir)
+	defer s.Close()
+	c.t = time.Date(2026, 10, 17, 12, 0, 0, 0, time.Local)
+	for n := range 1500 {
+		s.Append(rec{N: n, Time: c.t.UnixMilli() + int64(n), Device: deviceOf(n)})
+	}
+	c.t = c.t.AddDate(0, 0, 1)
+	for n := 1500; n < 2500; n++ {
+		s.Append(rec{N: n, Time: c.t.UnixMilli() + int64(n), Device: deviceOf(n)})
+	}
+	var all []int
+	s.Scan(Filter{}, func(line []byte) bool { all = append(all, numbers([][]byte{line})...); return true })
+	if len(all) != 2500 || !slices.IsSorted(all) {
+		t.Errorf("すべての行 = %d 件（古い順 %v）", len(all), slices.IsSorted(all))
+	}
+	var rare []int
+	s.scanned.Store(0)
+	s.Scan(Filter{Tags: [][]string{{"d:rare"}}}, func(line []byte) bool {
+		if matchDevice("rare")(line) {
+			rare = append(rare, numbers([][]byte{line})...)
+		}
+		return true
+	})
+	if len(rare) != 10 || rare[0] != 1500 {
+		t.Errorf("rare の行 = %v", rare)
+	}
+	var first []int
+	s.Scan(Filter{}, func(line []byte) bool { first = append(first, numbers([][]byte{line})...); return len(first) < 3 })
+	if !slices.Equal(first, []int{0, 1, 2}) {
+		t.Errorf("途中でやめたときの行 = %v", first)
+	}
+	// 前の日のファイルは、Since の日より前なら読まない。
+	var since []int
+	s.Scan(Filter{Since: time.Date(2026, 10, 18, 0, 0, 0, 0, time.Local)}, func(line []byte) bool {
+		since = append(since, numbers([][]byte{line})...)
+		return true
+	})
+	if len(since) != 1000 || since[0] != 1500 {
+		t.Errorf("Since からの行 = %d 件（最初 %v）", len(since), since[:min(1, len(since))])
+	}
+}

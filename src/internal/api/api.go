@@ -59,6 +59,8 @@ const (
 	PathEnrollCodes = "/v1/enroll/codes"
 	// PathAdmins は管理者の証明書の失効（2m-3）。GET で AdminList、PathAdmins+"/{ID}/revoke" への POST（AdminRevokeRequest）で失効させる。
 	PathAdmins = "/v1/admins"
+	// PathTrial は学習モードの試行の評価（2o）。?since=時刻&until=時刻&max_per_week=回数（RFC 3339。省略すると直近 14 日）。応答は TrialReport。
+	PathTrial = "/v1/trial"
 	// PathReleases はリリースの配布。管理者は GET で状態（ReleaseInfo。配布していなければ 404）、POST で目録を送る
 	// （ReleasePush）。PathReleases+"/files/{os}/{arch}" の PUT で実行ファイルを送り（本文はファイルそのもの）、
 	// 端末は GET で受け取る。"/promote" の POST で全体に広げ、"/abort" の POST で配布をやめる。
@@ -464,6 +466,73 @@ type AdminRevocation struct {
 type AdminList struct {
 	Self    string            `json:"self"` // 要求した管理者の ID
 	Revoked []AdminRevocation `json:"revoked"`
+}
+
+// TrialReport は学習モードの試行の評価（2o）。期間に保存したイベントを、今の検知ルールと例外で評価し直し、
+// 隔離していた回数を数える（フェーズ2のゲート「学習モードで誤検知が許容範囲に収まる」の判断に使う）。
+type TrialReport struct {
+	Since      time.Time        `json:"since"`
+	Until      time.Time        `json:"until"`
+	Oldest     time.Time        `json:"oldest,omitzero"` // 期間の中で残っている最も古いイベントの時刻（期間の初めよりずっと後なら、古いイベントが消えている）
+	Events     int              `json:"events"`          // 評価し直したイベントの数
+	Rules      RulesVersion     `json:"rules"`           // 使った検知ルールの版
+	Response   policy.Response  `json:"response"`        // 今のポリシーの対応の方式
+	Suppressed int              `json:"suppressed"`      // 期間中に、対応の方式（監視、警告）のために隔離しなかった回数（記録したもの）
+	Isolations []TrialIsolation `json:"isolations"`      // 今のルールと例外なら隔離していたもの（古い順）
+	IfEnforced []TrialIsolation `json:"if_enforced"`     // 試験運用のルールもすべて加点にしたら隔離していたもの
+	ByRule     []TrialRule      `json:"by_rule"`         // 当たった回数の多い順
+	ByTarget   []TrialTarget    `json:"by_target"`       // 隔離していた回数、当たった回数の多い順
+	Gate       TrialGate        `json:"gate"`
+}
+
+// TrialIsolation は、評価し直して隔離していた 1 回。
+type TrialIsolation struct {
+	Time      time.Time `json:"time"`
+	Target    string    `json:"target"` // 端末 ID か、CLIENT のない機器の MAC アドレス
+	Group     string    `json:"group"`
+	Score     int       `json:"score"`
+	Threshold int       `json:"threshold"`
+	Rules     []string  `json:"rules"` // 危険度を上げたルール
+}
+
+// TrialRule はルールごとの当たった回数。
+type TrialRule struct {
+	ID       string       `json:"id"`
+	Name     string       `json:"name"`
+	Mode     string       `json:"mode"`
+	Score    int          `json:"score"`
+	Hits     int          `json:"hits"`     // 例外に当たらなかった回数
+	Excepted int          `json:"excepted"` // 誤検知の例外で除いた回数
+	Targets  int          `json:"targets"`  // 当たった端末と機器の数
+	Top      []TrialCount `json:"top,omitempty"`
+}
+
+// TrialCount は対象ごとの回数。
+type TrialCount struct {
+	Target string `json:"target"`
+	Count  int    `json:"count"`
+}
+
+// TrialTarget は端末か機器ごとの結果。
+type TrialTarget struct {
+	Target     string       `json:"target"`
+	Group      string       `json:"group"`
+	Hits       int          `json:"hits"`
+	Isolations int          `json:"isolations"`
+	IfEnforced int          `json:"if_enforced"`
+	Rules      []TrialCount `json:"rules,omitempty"` // 当たったルールと回数（多い順）
+}
+
+// TrialGate は基準による判定。端末か機器ごとに、隔離していた回数が 1 週間あたり MaxPerWeek 以下なら合格とする
+// （試行の間に本当の攻撃がなければ、隔離はすべて誤検知とみなす）。
+type TrialGate struct {
+	MaxPerWeek     float64  `json:"max_per_week"`
+	Weeks          float64  `json:"weeks"`
+	Allowed        float64  `json:"allowed"` // 期間で許す回数（MaxPerWeek × Weeks）
+	Pass           bool     `json:"pass"`
+	Over           []string `json:"over,omitempty"` // 基準を超えた端末と機器
+	IfEnforcedPass bool     `json:"if_enforced_pass"`
+	IfEnforcedOver []string `json:"if_enforced_over,omitempty"`
 }
 
 // CertificateResponse は更新した証明書。

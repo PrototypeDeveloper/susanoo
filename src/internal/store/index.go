@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -179,19 +180,19 @@ func (b blockIndex) matches(f Filter) bool {
 // region はファイルの中の読む範囲。
 type region struct{ off, size int64 }
 
-// matchFile はファイルのうち match が真を返す行を、新しいものから n 件まで、古い順に返す。索引で、条件に合い得ないブロックは読まない。
-func (s *JSONL) matchFile(path string, flt Filter, match func([]byte) bool, n int) ([][]byte, error) {
+// openRegions はファイルを開き、flt に合い得る範囲（索引のない部分を含む）を位置の順に返す。ファイルがなければ nil を返す。
+func openRegions(path string, flt Filter) (*os.File, []region, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil // 古いファイルを消した後
+		return nil, nil, nil // 古いファイルを消した後
 	}
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	defer f.Close()
 	fi, err := f.Stat()
 	if err != nil {
-		return nil, err
+		f.Close()
+		return nil, nil, err
 	}
 	size := fi.Size()
 	var regions []region
@@ -208,12 +209,69 @@ func (s *JSONL) matchFile(path string, flt Filter, match func([]byte) bool, n in
 	if pos < size {
 		regions = append(regions, region{pos, size - pos})
 	}
+	return f, regions, nil
+}
+
+// matchFile はファイルのうち match が真を返す行を、新しいものから n 件まで、古い順に返す。索引で、条件に合い得ないブロックは読まない。
+func (s *JSONL) matchFile(path string, flt Filter, match func([]byte) bool, n int) ([][]byte, error) {
+	f, regions, err := openRegions(path, flt)
+	if f == nil || err != nil {
+		return nil, err
+	}
+	defer f.Close()
 	var out [][]byte
 	for i := len(regions) - 1; i >= 0 && len(out) < n; i-- {
 		found := s.scan(f, regions[i], match, n-len(out))
 		out = append(found, out...)
 	}
 	return out, nil
+}
+
+// Scan は、flt に合い得る行を古い順にすべて fn に渡す（fn が false を返したらやめる）。行が条件に合うかは fn で確かめる。
+// 行を記録した日はイベントの発生した日より前にならないので、flt.Since の前日までのファイルは読まない。
+func (s *JSONL) Scan(flt Filter, fn func(line []byte) bool) error {
+	files, err := s.Files()
+	if err != nil {
+		return err
+	}
+	for _, path := range files {
+		if !flt.Since.IsZero() {
+			day := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), s.prefix+"-"), ".jsonl")
+			if t, err := time.ParseInLocation("20060102", day, time.Local); err == nil && !t.AddDate(0, 0, 1).After(flt.Since) {
+				continue
+			}
+		}
+		f, regions, err := openRegions(path, flt)
+		if err != nil {
+			return err
+		}
+		if f == nil {
+			continue
+		}
+		stop := false
+		for _, r := range regions {
+			s.scanned.Add(r.size)
+			br := bufio.NewReaderSize(io.NewSectionReader(f, r.off, r.size), 64<<10)
+			for {
+				line, err := br.ReadBytes('\n')
+				if err != nil {
+					break // 終わり、または追記の途中の行
+				}
+				if !fn(line[:len(line)-1]) {
+					stop = true
+					break
+				}
+			}
+			if stop {
+				break
+			}
+		}
+		f.Close()
+		if stop {
+			return nil
+		}
+	}
+	return nil
 }
 
 // scan は範囲 r の行のうち match が真を返すものを、新しいものから n 件まで、古い順に返す。改行で終わらない行（追記の途中）は読まない。

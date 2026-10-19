@@ -87,7 +87,7 @@ install -m 0600 config/policy.example.json /etc/susanoo/policy.json
 - `dns.upstreams`：上流の DNS サーバー
 - `notify`：管理者への通知（Webhook、メール）。宛先のパスワードを含むので、このファイルは root だけが読めるようにする
 
-ポリシーは、最初はグループの外部通信の制御を学習モード（`egress.default: learn`）にして始める。学習の期間（既定 14 日）が終わったら、学習した名前から許可リストの案を作り（`ctl learned suggest`）、先行適用で一部の端末から原則拒否に移る。対応の方式（`response`）も、最初は `monitor`（隔離しない）か `alert` にして、誤検知を確かめてから `enforce` にする。
+ポリシーは、最初はグループの外部通信の制御を学習モード（`egress.default: learn`）にして始める。学習の期間（既定 14 日）が終わったら、学習した名前から許可リストの案を作り（`ctl learned suggest`）、先行適用で一部の端末から原則拒否に移る。対応の方式（`response`）も、最初は `monitor`（隔離しない）か `alert` にして、`ctl trial` で誤検知を確かめてから `enforce` にする。
 
 ### サービス
 
@@ -142,7 +142,7 @@ systemctl enable --now susanoo-client
 ## 4. 運用
 
 - 状態：`ctl status`（全体）、`ctl devices`、`ctl hosts`、`ctl events`、`ctl incident`。通知の宛先を設定していれば、隔離などをすぐに知らせる
-- 誤検知：試験運用（monitor）のルールの当たりを `ctl rules stats` で数え、平常の操作は例外にしてから加点にする（[policy.md](policy.md) の「検知ルールと危険度」）
+- 誤検知：`ctl trial -since 14d` で、保存したイベントを今の検知ルールと例外で評価し直し、端末ごとに隔離していた回数と当たったルールを確かめる。平常の操作は検知ルールの例外にして配布し、もう一度 `ctl trial` で確かめてから、対応の方式を `enforce` にし、試験運用（monitor）のルールを加点にする（[policy.md](policy.md) の「試行の評価」）
 - CLIENT の更新：新しい版を `make dist` で作り、`ctl upgrade sign` で署名して（二段構えならルートのディレクトリで）、`ctl upgrade push -canary <端末>` で先行適用し、問題がなければ `ctl upgrade promote` で全体に広げる。端末は版数とハッシュを確かめて入れ替え、起動し直す
 - GW の更新：`ctl upgrade verify` で実行ファイルが署名した目録と合うことを確かめてから置き換え、`systemctl restart susanoo-gw`
 - 証明書：端末と GW の証明書は自動で更新する。認証局の証明書（10 年）は、期限が近づいたら `ctl ca renew` で同じ鍵のまま発行し直す。二段構えの発行用の認証局（1 年）は `ctl root sign-issuer` で署名し直す

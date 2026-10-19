@@ -140,6 +140,8 @@ type Controller struct {
 	learned learnedLog
 	egw     egressGuard // GW の検知の強化（2m-2）
 
+	suppressed map[string]time.Time // 隔離しなかった判断を記録した時刻（2o。c.mu で守る）
+
 	// quarantined は GW で遮断しているアドレス。DHCP がロックを取らずに参照する。
 	quarantined atomic.Pointer[map[netip.Addr]bool]
 
@@ -483,10 +485,12 @@ func (c *Controller) decideLocked(group string, canary bool, target, reason stri
 	case policy.ResponseMonitor:
 		c.log.Info("監視モードのため隔離しません", "対象", target, "理由", reason)
 		c.notifyAlertLocked(target, reason, c.pol.Response)
+		c.recordSuppressedLocked(target, reason, c.pol.Response, c.groupLocked(group, canary).Isolation)
 		return decideNone, ""
 	case policy.ResponseAlert:
 		c.log.Warn("隔離が必要な検知がありました（警告モードのため隔離しません）", "対象", target, "理由", reason)
 		c.notifyAlertLocked(target, reason, c.pol.Response)
+		c.recordSuppressedLocked(target, reason, c.pol.Response, c.groupLocked(group, canary).Isolation)
 		return decideNone, ""
 	}
 	g := c.groupLocked(group, canary)
