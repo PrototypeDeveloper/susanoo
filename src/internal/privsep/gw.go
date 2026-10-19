@@ -206,11 +206,15 @@ func handleGW(ctx context.Context, ex GWExecutor, typ string, body json.RawMessa
 		if err := decodeBody(body, &b); err != nil {
 			return nil, err
 		}
-		cert, err := ex.Issuer.IssueClient(ctx, b.ID, b.Pub)
+		chain, err := ex.Issuer.IssueClient(ctx, b.ID, b.Pub)
 		if err != nil {
 			return nil, err
 		}
-		return cert.Raw, nil
+		var ders [][]byte
+		for _, c := range chain {
+			ders = append(ders, c.Raw)
+		}
+		return ders, nil
 	case reqApplyPolicy, reqPromotePolicy, reqAbortPolicy:
 		if ex.Policies == nil {
 			return nil, refuse
@@ -357,12 +361,23 @@ func (r *GWRemote) ApplyIntel(ctx context.Context, env sign.Envelope) error {
 func (r *GWRemote) Certs() <-chan []byte { return r.certs }
 
 // IssueClient は端末の証明書の発行を執行部に頼む（controller.Issuer）。
-func (r *GWRemote) IssueClient(ctx context.Context, id string, pub ed25519.PublicKey) (*x509.Certificate, error) {
-	var der []byte
-	if err := r.p.call(ctx, reqIssueClient, issueBody{ID: id, Pub: pub}, &der); err != nil {
+func (r *GWRemote) IssueClient(ctx context.Context, id string, pub ed25519.PublicKey) ([]*x509.Certificate, error) {
+	var ders [][]byte
+	if err := r.p.call(ctx, reqIssueClient, issueBody{ID: id, Pub: pub}, &ders); err != nil {
 		return nil, err
 	}
-	return x509.ParseCertificate(der)
+	if len(ders) == 0 || len(ders) > 4 {
+		return nil, errors.New("privsep: 発行した証明書の連なりが不正です")
+	}
+	var chain []*x509.Certificate
+	for _, der := range ders {
+		c, err := x509.ParseCertificate(der)
+		if err != nil {
+			return nil, err
+		}
+		chain = append(chain, c)
+	}
+	return chain, nil
 }
 
 // Changes は、執行部が見つけた設定ファイルの変更を届けるチャネルを返す。

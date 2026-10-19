@@ -328,7 +328,8 @@ type Device struct {
 
 // CertificateResponse は更新した証明書。
 type CertificateResponse struct {
-	Certificate []byte `json:"certificate"` // DER
+	Certificate []byte   `json:"certificate"`     // DER
+	Chain       [][]byte `json:"chain,omitempty"` // 連ねる認証局の証明書（二段構えの発行用の認証局。DER）
 }
 
 // Host は ctl に返す LAN の機器の状態（G8）。
@@ -410,7 +411,8 @@ type Status struct {
 	Response       policy.Response `json:"response"` // 今の版の対応の方式
 	Policy         PolicyVersion   `json:"policy"`
 	Canary         *PolicyCanary   `json:"canary,omitempty"`
-	CertExpiry     time.Time       `json:"cert_expiry"` // CONTROLLER の証明書の期限
+	CertExpiry     time.Time       `json:"cert_expiry"`             // CONTROLLER の証明書の期限
+	IssuerExpiry   *time.Time      `json:"issuer_expiry,omitempty"` // 二段構えの発行用の認証局の証明書の期限（ctl root sign-issuer で更新する）
 	Devices        DeviceCounts    `json:"devices"`
 	Hosts          HostCounts      `json:"hosts"`
 	ExpiringCerts  []Device        `json:"expiring_certs,omitempty"`  // 証明書の期限が近いのに更新していない端末

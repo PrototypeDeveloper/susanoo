@@ -34,11 +34,15 @@ type fakeIssuer struct {
 	calls []string
 }
 
-func (i *fakeIssuer) IssueClient(_ context.Context, id string, pub ed25519.PublicKey) (*x509.Certificate, error) {
+func (i *fakeIssuer) IssueClient(_ context.Context, id string, pub ed25519.PublicKey) ([]*x509.Certificate, error) {
 	i.mu.Lock()
 	i.calls = append(i.calls, id)
 	i.mu.Unlock()
-	return i.env.CA.Issue(pub, pki.Identity{Role: pki.RoleClient, ID: id}, time.Now())
+	c, err := i.env.CA.Issue(pub, pki.Identity{Role: pki.RoleClient, ID: id}, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	return i.env.CA.ChainOf(c), nil
 }
 
 // shortCert は有効期間 validity の端末の証明書を作る。
@@ -52,7 +56,7 @@ func shortCert(t *testing.T, env *pkitest.Env, id string, validity time.Duration
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pki.TLSCertificate(cert, priv)
+	return pki.TLSChain(env.CA.ChainOf(cert), priv)
 }
 
 // 端末は、有効期間の残りが 3 分の 1 を切った証明書を、同じ鍵で更新できる。時期より前の更新は断る。
@@ -99,6 +103,39 @@ func TestRenewCertificate(t *testing.T) {
 	admin := f.peer(pki.RoleAdmin, "admin")
 	if status, _ := admin.do(http.MethodPost, api.PathCertificate, nil); status != http.StatusForbidden {
 		t.Errorf("管理者の更新の応答 = %d", status)
+	}
+}
+
+// 二段構えでは、更新した証明書に、CONTROLLER の証明書に連なる発行用の認証局の証明書を添える。
+// 発行用の認証局の証明書は名前の制約を持つので、管理者の証明書はルートの認証局が発行する。
+func TestRenewCertificateTwoTier(t *testing.T) {
+	env := pkitest.NewTwoTier(t)
+	f := startFull(t, env, t.TempDir(), testPolicy(policy.ResponseEnforce, false), nil, &fakeIssuer{env: env})
+	f.clock.set(time.Now())
+	cert := shortCert(t, env, "pc-002", time.Hour)
+	f.clock.advance(41 * time.Minute)
+	status, body := f.peerWith(cert, "pc-002").do(http.MethodPost, api.PathCertificate, nil)
+	if status != http.StatusOK {
+		t.Fatalf("更新の応答 = %d %s", status, body)
+	}
+	var resp api.CertificateResponse
+	if err := json.Unmarshal(body, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Chain) != 1 || !slices.Equal(resp.Chain[0], env.CA.Cert.Raw) {
+		t.Fatalf("添えた連なり = %d 個", len(resp.Chain))
+	}
+	renewed, err := x509.ParseCertificate(resp.Certificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inter := x509.NewCertPool()
+	inter.AddCert(env.CA.Cert)
+	if _, err := renewed.Verify(x509.VerifyOptions{Roots: env.CA.Pool(), Intermediates: inter, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}); err != nil {
+		t.Errorf("更新した証明書を確かめられない: %v", err)
+	}
+	if status, _ := f.peer(pki.RoleAdmin, "admin").do(http.MethodGet, api.PathStatus, nil); status != http.StatusOK {
+		t.Errorf("ルートの発行した管理者の応答 = %d", status)
 	}
 }
 

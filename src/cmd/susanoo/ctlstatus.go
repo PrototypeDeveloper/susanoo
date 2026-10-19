@@ -65,6 +65,13 @@ func ctlStatus(args []string, stdout, stderr io.Writer) int {
 		return exitOK
 	}
 	fmt.Fprintf(stdout, "susanoo %s（CONTROLLER の起動 %s、証明書の期限 %s）\n", st.Version, st.StartedAt.Local().Format(timeFormat), st.CertExpiry.Local().Format("2006-01-02"))
+	if e := st.IssuerExpiry; e != nil {
+		fmt.Fprintf(stdout, "発行用の認証局の期限 %s", e.Local().Format("2006-01-02"))
+		if time.Until(*e) < issuerWarnBefore {
+			fmt.Fprint(stdout, "（期限が近いので、ctl root sign-issuer で署名し直し、ctl init -issuer で入れ替えてください）")
+		}
+		fmt.Fprintln(stdout)
+	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintf(tw, "ポリシー\t版 %d「%s」（対応 %s）\n", st.Policy.Version, st.Policy.Name, st.Response)
 	if p := st.Canary; p != nil {

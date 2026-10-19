@@ -102,11 +102,11 @@ func handleClient(ctx context.Context, ex client.Executor, typ string, body json
 		}
 		return ex.SignTLS(ctx, msg)
 	case reqRenewCert:
-		var der []byte
-		if err := decodeBody(body, &der); err != nil {
+		var chain [][]byte
+		if err := decodeBody(body, &chain); err != nil {
 			return nil, err
 		}
-		return nil, ex.RenewCert(ctx, der)
+		return nil, ex.RenewCert(ctx, chain) // 連なりの長さと中身は執行部が確かめる
 	case reqEvidenceNext:
 		id, env, ok, err := ex.NextEvidence(ctx)
 		return evidenceItem{OK: ok, ID: id, Envelope: env}, err
@@ -201,8 +201,8 @@ func (r *Remote) SignTLS(ctx context.Context, message []byte) ([]byte, error) {
 	return sig, err
 }
 
-func (r *Remote) RenewCert(ctx context.Context, der []byte) error {
-	return r.p.call(ctx, reqRenewCert, der, nil)
+func (r *Remote) RenewCert(ctx context.Context, chain [][]byte) error {
+	return r.p.call(ctx, reqRenewCert, chain, nil)
 }
 
 func (r *Remote) NextEvidence(ctx context.Context) (string, sign.Envelope, bool, error) {

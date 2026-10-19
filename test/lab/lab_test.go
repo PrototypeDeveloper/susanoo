@@ -468,10 +468,19 @@ func writeJSON(t *testing.T, path string, v any) {
 }
 
 type lab struct {
-	t       *testing.T
-	dir     string
-	ctrlDir string
-	script  string
+	t        *testing.T
+	dir      string
+	ctrlDir  string
+	adminDir string // 管理者の証明書のディレクトリ（空なら ctrlDir。二段構えではルートのディレクトリ）
+	script   string
+}
+
+// admin は ctl の -dir に渡す、管理者の証明書のディレクトリを返す。
+func (l *lab) admin() string {
+	if l.adminDir != "" {
+		return l.adminDir
+	}
+	return l.ctrlDir
 }
 
 func (l *lab) susanoo(args ...string) string {
@@ -481,7 +490,7 @@ func (l *lab) susanoo(args ...string) string {
 
 // ctlJSON は GW の名前空間から ctl を実行し、JSON の出力を v に読む。
 func (l *lab) ctlJSON(v any, args ...string) bool {
-	args = append(append([]string{*susanooBin, "ctl"}, args...), "-dir", l.ctrlDir, "-server", controllerAddr, "-json")
+	args = append(append([]string{*susanooBin, "ctl"}, args...), "-dir", l.admin(), "-server", controllerAddr, "-json")
 	out, err := inNS(nsGW, args...).Output()
 	return err == nil && json.Unmarshal(out, v) == nil
 }

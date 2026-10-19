@@ -43,9 +43,9 @@ func loadCA(dir string) (*x509.Certificate, error) {
 	return pki.ReadCertFile(filepath.Join(dir, fileCACert))
 }
 
-// loadLeaf は証明書と秘密鍵を読む。秘密鍵の権限が緩い場合は拒否する。
+// loadLeaf は証明書（二段構えなら、発行用の認証局の証明書が連なる）と秘密鍵を読む。秘密鍵の権限が緩い場合は拒否する。
 func loadLeaf(dir, certFile, keyFile string) (tls.Certificate, error) {
-	cert, err := pki.ReadCertFile(filepath.Join(dir, certFile))
+	chain, err := pki.ReadChainFile(filepath.Join(dir, certFile))
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -53,7 +53,7 @@ func loadLeaf(dir, certFile, keyFile string) (tls.Certificate, error) {
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	return pki.TLSCertificate(cert, priv), nil
+	return pki.TLSChain(chain, priv), nil
 }
 
 func loadCommandKey(dir string) (ed25519.PublicKey, error) {

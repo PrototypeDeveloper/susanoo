@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -146,6 +147,7 @@ func runGW(ctx context.Context, args []string, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, err)
 	}
+	warnIssuerExpiry(ca, time.Now(), log)
 	if _, err := renewOwnCerts(ca, pkiDir, time.Now(), log); err != nil {
 		return fail(stderr, err)
 	}
@@ -217,7 +219,7 @@ func runGW(ctx context.Context, args []string, stderr io.Writer) int {
 
 	if separate {
 		ch := gwControllerHello{
-			Config: cfg, Policy: curData, Canary: canData, CA: ca.Cert.Raw, Chain: cert.Certificate,
+			Config: cfg, Policy: curData, Canary: canData, CA: ca.Root.Raw, Chain: cert.Certificate,
 			Key: cert.PrivateKey.(ed25519.PrivateKey), SignKey: signKey, StateDir: stateDir, RulesKey: policyPub, Intel: intelPayload,
 		}
 		lh := gwLANHello{Config: cfg, Policy: curData, Canary: canData, StateDir: stateDir, Intel: intelSet.Blocklist()}
@@ -256,19 +258,24 @@ func renewOwnCerts(ca *pki.CA, pkiDir string, now time.Time, log *slog.Logger) (
 	var renewed *x509.Certificate
 	for _, file := range []string{fileControllerCert, fileAdminCert} {
 		path := filepath.Join(pkiDir, file)
-		cert, err := pki.ReadCertFile(path)
+		chain, err := pki.ReadChainFile(path)
 		if errors.Is(err, fs.ErrNotExist) && file == fileAdminCert {
 			continue // 管理者の証明書を別の場所に置いている
 		}
 		if err != nil {
 			return nil, err
 		}
-		if !pki.RenewalDue(cert, now) {
-			continue
-		}
+		cert := chain[0]
 		id, err := pki.IdentityFromCert(cert)
 		if err != nil {
 			return nil, err
+		}
+		if !ca.CanIssue(id.Role) {
+			continue // 二段構えでは、管理者の証明書はルートの認証局で更新する（ctl root admin）
+		}
+		// 発行用の認証局の証明書を差し替えたら（ctl init -issuer）、期限を待たずに今の連なりで発行し直す。
+		if !pki.RenewalDue(cert, now) && sameChain(chain[1:], ca.ChainOf(cert)[1:]) {
+			continue
 		}
 		pub, ok := cert.PublicKey.(ed25519.PublicKey)
 		if !ok {
@@ -278,7 +285,7 @@ func renewOwnCerts(ca *pki.CA, pkiDir string, now time.Time, log *slog.Logger) (
 		if err != nil {
 			return nil, err
 		}
-		if err := pki.WriteCertFile(path, next); err != nil {
+		if err := pki.WriteChainFile(path, ca.ChainOf(next)...); err != nil {
 			return nil, err
 		}
 		log.Info("証明書を更新しました", "ファイル", path, "期限", next.NotAfter.Local().Format(time.DateTime))
@@ -289,15 +296,35 @@ func renewOwnCerts(ca *pki.CA, pkiDir string, now time.Time, log *slog.Logger) (
 	return renewed, nil
 }
 
+// warnIssuerExpiry は、二段構えの発行用の認証局の証明書の期限が近ければ知らせる。知らせたら true を返す。
+// 期限を過ぎると、端末と CONTROLLER の証明書を更新できない（発行する証明書の期限は発行用の認証局の期限までになる）。
+func warnIssuerExpiry(ca *pki.CA, now time.Time, log *slog.Logger) bool {
+	if !ca.TwoTier() || ca.ExpiresAt().Sub(now) >= issuerWarnBefore {
+		return false
+	}
+	log.Warn("発行用の認証局の証明書の期限が近づいています。管理者が ctl root sign-issuer で署名し直し、ctl init -issuer で入れ替えて GW を起動し直してください",
+		"期限", ca.ExpiresAt().Local().Format(time.DateTime))
+	return true
+}
+
+// sameChain は、二つの証明書の並びが同じかを返す。
+func sameChain(a, b []*x509.Certificate) bool {
+	return slices.EqualFunc(a, b, func(x, y *x509.Certificate) bool { return x.Equal(y) })
+}
+
 // renewLoop は renewCheckInterval ごとに自分の証明書を確かめ、CONTROLLER の証明書を更新したら renewed を呼ぶ。
 func renewLoop(ctx context.Context, g *gwPrepared, log *slog.Logger, renewed func(*x509.Certificate)) {
 	t := time.NewTicker(renewCheckInterval)
+	warned := time.Now() // 起動のときに一度知らせている
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
+			if now.Sub(warned) >= 24*time.Hour && warnIssuerExpiry(g.ca, now, log) {
+				warned = now
+			}
 			cert, err := renewOwnCerts(g.ca, g.pkiDir, now, log)
 			if err != nil {
 				log.Error("証明書を更新できません", "エラー", err)
@@ -314,13 +341,13 @@ type caIssuer struct {
 	log *slog.Logger
 }
 
-func (i caIssuer) IssueClient(_ context.Context, id string, pub ed25519.PublicKey) (*x509.Certificate, error) {
+func (i caIssuer) IssueClient(_ context.Context, id string, pub ed25519.PublicKey) ([]*x509.Certificate, error) {
 	cert, err := i.ca.Issue(pub, pki.Identity{Role: pki.RoleClient, ID: id}, time.Now())
 	if err != nil {
 		return nil, err
 	}
 	i.log.Info("端末の証明書を発行しました", "端末", id, "期限", cert.NotAfter.Local().Format(time.DateTime))
-	return cert, nil
+	return i.ca.ChainOf(cert), nil
 }
 
 // prepareGW は、ルーター方式と外部通信の制御と通信の記録のルールを入れ、使うソケットを開く。root で行う。
@@ -703,7 +730,7 @@ func runGWInProcess(ctx context.Context, g *gwPrepared, pols *gwPolicies, intels
 	certs := make(chan tls.Certificate, 1)
 	go renewLoop(ctx, g, log, func(c *x509.Certificate) {
 		select {
-		case certs <- pki.TLSCertificate(c, cert.PrivateKey.(ed25519.PrivateKey)):
+		case certs <- pki.TLSChain(g.ca.ChainOf(c), cert.PrivateKey.(ed25519.PrivateKey)):
 		case <-ctx.Done():
 		}
 	})
@@ -824,7 +851,16 @@ func serveGWController(conn *os.File, log *slog.Logger) error {
 			return err
 		}
 	}
-	c := &gwController{cfg: cfg, pol: pol, canary: canary, pool: pool, cert: pki.TLSCertificate(leaf, key), signer: signer,
+	// 二段構えでは、CONTROLLER の証明書に発行用の認証局の証明書が連なる。更新した証明書にも同じものを連ねる。
+	chain := []*x509.Certificate{leaf}
+	for _, der := range hello.Chain[1:] {
+		inter, err := x509.ParseCertificate(der)
+		if err != nil {
+			return err
+		}
+		chain = append(chain, inter)
+	}
+	c := &gwController{cfg: cfg, pol: pol, canary: canary, pool: pool, cert: pki.TLSChain(chain, key), signer: signer,
 		rulesKey: ed25519.PublicKey(hello.RulesKey), intel: remote, intelSet: intelSet, stateDir: hello.StateDir, listener: files.listener, issuer: remote, policies: remote, changes: remote.Changes(), certs: certs, log: log}
 	if cfg.Enforce == nil || *cfg.Enforce {
 		c.quarantine = remote
@@ -842,7 +878,7 @@ func serveGWController(conn *os.File, log *slog.Logger) error {
 					log.Error("執行部から届いた CONTROLLER の証明書が不正です")
 					continue
 				}
-				certs <- pki.TLSCertificate(next, key)
+				certs <- pki.TLSChain(append([]*x509.Certificate{next}, chain[1:]...), key)
 			case <-ctx.Done():
 				return
 			}

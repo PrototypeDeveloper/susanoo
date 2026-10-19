@@ -29,7 +29,7 @@ const (
 func (c *Controller) getStatus(w http.ResponseWriter, _ *http.Request, _ pki.Identity) {
 	now := c.now()
 	c.mu.Lock()
-	st := api.Status{Version: version.Version, StartedAt: c.started, Response: c.pol.Response, CertExpiry: c.certExpiry()}
+	st := api.Status{Version: version.Version, StartedAt: c.started, Response: c.pol.Response, CertExpiry: c.certExpiry(), IssuerExpiry: c.issuerExpiry()}
 	info := c.policyInfoLocked()
 	st.Policy, st.Canary = info.Current, info.Canary
 	for _, d := range c.devices {
@@ -88,6 +88,19 @@ func (c *Controller) getStatus(w http.ResponseWriter, _ *http.Request, _ pki.Ide
 }
 
 // certExpiry は CONTROLLER の証明書の期限を返す。
+// issuerExpiry は、CONTROLLER の証明書に連なる発行用の認証局の証明書の期限を返す。一段なら nil。
+func (c *Controller) issuerExpiry() *time.Time {
+	chain := c.cert.Load().Certificate
+	if len(chain) < 2 {
+		return nil
+	}
+	issuer, err := x509.ParseCertificate(chain[1])
+	if err != nil {
+		return nil
+	}
+	return &issuer.NotAfter
+}
+
 func (c *Controller) certExpiry() time.Time {
 	cert := c.cert.Load()
 	if cert.Leaf != nil {

@@ -40,8 +40,9 @@ const (
 )
 
 // Issuer は端末の証明書を発行する（GW の執行部が満たす）。役割は端末に限る。
+// 返すのは、発行した証明書を先頭に、連ねる認証局の証明書（二段構えの発行用の認証局）を続けたもの。
 type Issuer interface {
-	IssueClient(ctx context.Context, id string, pub ed25519.PublicKey) (*x509.Certificate, error)
+	IssueClient(ctx context.Context, id string, pub ed25519.PublicKey) ([]*x509.Certificate, error)
 }
 
 var errRevoked = errors.New("controller: 証明書は失効しています")
@@ -119,19 +120,27 @@ func (c *Controller) renewCertificate(w http.ResponseWriter, r *http.Request, id
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), issueTimeout)
 	defer cancel()
-	cert, err := c.cfg.Issuer.IssueClient(ctx, id.ID, pub)
+	chain, err := c.cfg.Issuer.IssueClient(ctx, id.ID, pub)
+	if err == nil && len(chain) == 0 {
+		err = errors.New("発行した証明書がありません")
+	}
 	if err != nil {
 		c.log.Error("端末の証明書を発行できません", "端末", id.ID, "エラー", err)
 		writeError(w, http.StatusInternalServerError, "証明書を発行できません")
 		return
 	}
+	cert := chain[0]
 	c.mu.Lock()
 	c.auditLocked(id.String(), ActionRenew, id.ID, remoteAddr(r), map[string]any{
 		"serial": cert.SerialNumber.Text(16), "not_after": cert.NotAfter.UTC(),
 	})
 	c.mu.Unlock()
 	c.log.Info("端末の証明書を更新しました", "端末", id.ID, "期限", cert.NotAfter.Local().Format(time.DateTime))
-	writeJSON(w, http.StatusOK, api.CertificateResponse{Certificate: cert.Raw})
+	resp := api.CertificateResponse{Certificate: cert.Raw}
+	for _, inter := range chain[1:] {
+		resp.Chain = append(resp.Chain, inter.Raw)
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // revokeDevice は端末の証明書を失効させ、端末を全遮断で隔離する。台帳にまだない端末（盗まれて一度も

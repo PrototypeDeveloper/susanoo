@@ -42,8 +42,8 @@ type Executor interface {
 	Apply(ctx context.Context, cmd sign.Envelope) error
 	// SignTLS は TLS 1.3 のクライアント認証（CertificateVerify）の署名を作る。ほかの用途には署名しない。
 	SignTLS(ctx context.Context, message []byte) ([]byte, error)
-	// RenewCert は、CONTROLLER から受け取った更新した証明書（DER）を確かめて保存する（M1）。
-	RenewCert(ctx context.Context, der []byte) error
+	// RenewCert は、CONTROLLER から受け取った更新した証明書の連なり（DER。先頭が端末の証明書）を確かめて保存する（M1）。
+	RenewCert(ctx context.Context, chain [][]byte) error
 	// Watch は検知したイベントを out に送り続け、ctx が終わったら返る。
 	Watch(ctx context.Context, out chan<- event.Event) error
 	// NextEvidence は、まだ CONTROLLER に受け取られていない最も古い証拠（署名付き）と、その ID を返す（C11）。
@@ -319,16 +319,28 @@ func (l *Local) SignTLS(_ context.Context, message []byte) ([]byte, error) {
 
 // RenewCert は、更新した証明書が内部の認証局の発行したもので、持ち主（端末 ID）と鍵が今の証明書と同じで、
 // 期限が今の証明書より先であることを確かめてから、保存して使い始める。
-func (l *Local) RenewCert(_ context.Context, der []byte) error {
+func (l *Local) RenewCert(_ context.Context, chainDER [][]byte) error {
 	if l.cfg.CA == nil {
 		return errors.New("client: 認証局がないため、更新した証明書を確かめられません")
 	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		return fmt.Errorf("client: 更新した証明書を解析できません: %w", err)
+	if len(chainDER) == 0 || len(chainDER) > 4 {
+		return errors.New("client: 更新した証明書の連なりが不正です")
 	}
+	var chain []*x509.Certificate
+	inter := x509.NewCertPool()
+	for i, der := range chainDER {
+		c, err := x509.ParseCertificate(der)
+		if err != nil {
+			return fmt.Errorf("client: 更新した証明書を解析できません: %w", err)
+		}
+		chain = append(chain, c)
+		if i > 0 {
+			inter.AddCert(c)
+		}
+	}
+	cert := chain[0]
 	if _, err := cert.Verify(x509.VerifyOptions{
-		Roots: l.cfg.CA, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, CurrentTime: l.cfg.Now(),
+		Roots: l.cfg.CA, Intermediates: inter, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, CurrentTime: l.cfg.Now(),
 	}); err != nil {
 		return fmt.Errorf("client: 更新した証明書を検証できません: %w", err)
 	}
@@ -344,7 +356,7 @@ func (l *Local) RenewCert(_ context.Context, der []byte) error {
 		return errors.New("client: 更新した証明書の期限が今の証明書より先ではありません")
 	}
 	if l.cfg.CertPath != "" {
-		if err := pki.WriteCertFile(l.cfg.CertPath, cert); err != nil {
+		if err := pki.WriteChainFile(l.cfg.CertPath, chain...); err != nil {
 			return err
 		}
 	}

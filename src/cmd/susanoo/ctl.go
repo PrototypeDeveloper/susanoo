@@ -31,7 +31,8 @@ import (
 const ctlUsage = `使い方: susanoo ctl <操作> [オプション]
 
 操作:
-  init     CONTROLLERの認証局、署名の鍵、証明書を作る
+  init     CONTROLLERの認証局、署名の鍵、証明書を作る（-two-tier と -issuer で、ルートの認証局を GW の外に置く二段構えにする）
+  root     二段構えのルートの認証局を、管理者の手元で作る・使う（susanoo ctl root で説明を表示）
   issue    端末の公開鍵に証明書を発行し、端末に配るファイルを書き出す
   status   全体の状態（ポリシー、端末と機器の台数、危険度の高い端末、証明書の期限が近い端末、最近の検知）を表示する
   devices  端末の一覧を表示する
@@ -65,6 +66,8 @@ func runCtl(args []string, stdout, stderr io.Writer) int {
 		return ctlInit(args[1:], stdout, stderr)
 	case "issue":
 		return ctlIssue(args[1:], stdout, stderr)
+	case "root":
+		return ctlRoot(args[1:], stdout, stderr)
 	case "status":
 		return ctlStatus(args[1:], stdout, stderr)
 	case "events":
@@ -112,11 +115,29 @@ func ctlInit(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	dir := flags.String("dir", defaultCtlDir, "認証局と鍵を置くディレクトリ")
 	name := flags.String("name", "susanoo 内部認証局", "認証局の名前")
+	twoTier := flags.Bool("two-tier", false, "二段構え: GW の発行用の認証局の鍵だけを作る（公開鍵を管理者が ctl root sign-issuer で署名する）")
+	issuerDir := flags.String("issuer", "", "二段構え: ctl root sign-issuer の書き出したディレクトリから署名を受け取り、CONTROLLER の証明書を作る")
 	if err := flags.Parse(args); err != nil {
 		return exitUsage
 	}
-	if _, err := os.Stat(filepath.Join(*dir, fileCAKey)); !errors.Is(err, fs.ErrNotExist) {
-		return fail(stderr, fmt.Errorf("%s には既に認証局があります", *dir))
+	switch {
+	case *twoTier && *issuerDir != "":
+		return fail(stderr, errors.New("-two-tier と -issuer は別々に実行してください"))
+	case *twoTier:
+		if err := ctlInitIssuerKey(*dir, stdout); err != nil {
+			return fail(stderr, err)
+		}
+		return exitOK
+	case *issuerDir != "":
+		if err := ctlInitIssuer(*dir, *issuerDir, stdout); err != nil {
+			return fail(stderr, err)
+		}
+		return exitOK
+	}
+	for _, f := range []string{fileCAKey, pki.IssuerKeyFile} {
+		if _, err := os.Stat(filepath.Join(*dir, f)); !errors.Is(err, fs.ErrNotExist) {
+			return fail(stderr, fmt.Errorf("%s には既に認証局があります", *dir))
+		}
 	}
 	if err := os.MkdirAll(*dir, 0o700); err != nil {
 		return fail(stderr, err)
@@ -194,10 +215,10 @@ func ctlIssue(args []string, stdout, stderr io.Writer) int {
 	if err := os.MkdirAll(*out, 0o700); err != nil {
 		return fail(stderr, err)
 	}
-	if err := pki.WriteCertFile(filepath.Join(*out, fileClientCert), cert); err != nil {
+	if err := pki.WriteChainFile(filepath.Join(*out, fileClientCert), ca.ChainOf(cert)...); err != nil {
 		return fail(stderr, err)
 	}
-	if err := pki.WriteCertFile(filepath.Join(*out, fileCACert), ca.Cert); err != nil {
+	if err := pki.WriteCertFile(filepath.Join(*out, fileCACert), ca.Root); err != nil {
 		return fail(stderr, err)
 	}
 	signPub, err := os.ReadFile(filepath.Join(*dir, fileSignPub))

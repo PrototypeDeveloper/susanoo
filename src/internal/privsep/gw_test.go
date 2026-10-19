@@ -112,8 +112,12 @@ var testCA = func() *pki.CA {
 	return ca
 }()
 
-func (testIssuer) IssueClient(_ context.Context, id string, pub ed25519.PublicKey) (*x509.Certificate, error) {
-	return testCA.Issue(pub, pki.Identity{Role: pki.RoleClient, ID: id}, time.Now())
+func (testIssuer) IssueClient(_ context.Context, id string, pub ed25519.PublicKey) ([]*x509.Certificate, error) {
+	c, err := testCA.Issue(pub, pki.Identity{Role: pki.RoleClient, ID: id}, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	return testCA.ChainOf(c), nil
 }
 
 // startGW は GW の執行部（nft の代わりに記録係）を動かし、非特権の側からつなぐ。access でつながりが受け付ける要求を決める。
@@ -315,11 +319,11 @@ func TestGWCertificates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cert, err := g.remote.IssueClient(context.Background(), "pc-001", priv.Public().(ed25519.PublicKey))
+	chain, err := g.remote.IssueClient(context.Background(), "pc-001", priv.Public().(ed25519.PublicKey))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id, _ := pki.IdentityFromCert(cert); id != (pki.Identity{Role: pki.RoleClient, ID: "pc-001"}) {
+	if id, _ := pki.IdentityFromCert(chain[0]); id != (pki.Identity{Role: pki.RoleClient, ID: "pc-001"}) {
 		t.Errorf("発行した証明書の持ち主 = %v", id)
 	}
 	if _, err := g.remote.IssueClient(context.Background(), "PC 001", priv.Public().(ed25519.PublicKey)); err == nil {

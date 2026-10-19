@@ -450,8 +450,12 @@ func TestTamperedIsolationIsRestored(t *testing.T) {
 // caIssuer は GW の執行部の代わりに、試験用の認証局で端末の証明書を発行する。
 type caIssuer struct{ env *pkitest.Env }
 
-func (i caIssuer) IssueClient(_ context.Context, id string, pub ed25519.PublicKey) (*x509.Certificate, error) {
-	return i.env.CA.Issue(pub, pki.Identity{Role: pki.RoleClient, ID: id}, time.Now())
+func (i caIssuer) IssueClient(_ context.Context, id string, pub ed25519.PublicKey) ([]*x509.Certificate, error) {
+	c, err := i.env.CA.Issue(pub, pki.Identity{Role: pki.RoleClient, ID: id}, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	return i.env.CA.ChainOf(c), nil
 }
 
 // 執行部は、内部の認証局が発行し、持ち主と鍵が同じで、期限が今より先の証明書だけを受け入れて保存する。
@@ -482,7 +486,7 @@ func TestLocalRenewCert(t *testing.T) {
 		"期限が先でない": l.leaf.Raw,
 		"証明書でない":  []byte("not a certificate"),
 	} {
-		if err := l.RenewCert(ctx, der); err == nil {
+		if err := l.RenewCert(ctx, [][]byte{der}); err == nil {
 			t.Errorf("%s の証明書を受け入れた", name)
 		}
 	}
@@ -490,12 +494,43 @@ func TestLocalRenewCert(t *testing.T) {
 		t.Fatal("不正な証明書を保存した")
 	}
 	good := issue(env.CA, pub, "pc-001", later)
-	if err := l.RenewCert(ctx, good); err != nil {
+	if err := l.RenewCert(ctx, [][]byte{good}); err != nil {
 		t.Fatal(err)
 	}
 	saved, err := pki.ReadCertFile(certPath)
 	if err != nil || !bytes.Equal(saved.Raw, good) {
 		t.Errorf("保存した証明書 = %v", err)
+	}
+}
+
+// 二段構えでは、更新した証明書に発行用の認証局の証明書が連なっていなければ確かめられない。連なりごと保存する。
+func TestLocalRenewCertChain(t *testing.T) {
+	env := pkitest.NewTwoTier(t)
+	l := newLocal(t, env, netip.MustParseAddrPort("127.0.0.1:1"), t.TempDir(), platformtest.New(caps))
+	certPath := filepath.Join(t.TempDir(), "client.crt")
+	l.cfg.CertPath = certPath
+	c, err := env.CA.Issue(l.key.Public().(ed25519.PublicKey), pki.Identity{Role: pki.RoleClient, ID: "pc-001"}, time.Now().Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	issuer := env.CA.Cert.Raw
+	for name, chain := range map[string][][]byte{
+		"連なりなし":  {c.Raw},
+		"空":      nil,
+		"長すぎる":   {c.Raw, issuer, issuer, issuer, issuer},
+		"壊れた連なり": {c.Raw, []byte("x")},
+	} {
+		if err := l.RenewCert(ctx, chain); err == nil {
+			t.Errorf("%s を受け入れた", name)
+		}
+	}
+	if err := l.RenewCert(ctx, [][]byte{c.Raw, issuer}); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := pki.ReadChainFile(certPath)
+	if err != nil || len(saved) != 2 || !saved[0].Equal(c) || !saved[1].Equal(env.CA.Cert) {
+		t.Errorf("保存した連なり = %d 個、%v", len(saved), err)
 	}
 }
 

@@ -155,7 +155,8 @@ func (a *Agent) renewIfDue(ctx context.Context) {
 		a.log.Warn("証明書を更新できません", "期限", a.cert.Leaf.NotAfter, "エラー", err)
 		return
 	}
-	if err := a.cfg.Executor.RenewCert(ctx, resp.Certificate); err != nil {
+	chain := append([][]byte{resp.Certificate}, resp.Chain...)
+	if err := a.cfg.Executor.RenewCert(ctx, chain); err != nil {
 		a.log.Error("更新した証明書を受け入れられません", "エラー", err)
 		return
 	}
@@ -163,7 +164,7 @@ func (a *Agent) renewIfDue(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	a.cert = tls.Certificate{Certificate: [][]byte{resp.Certificate}, Leaf: leaf, PrivateKey: a.cert.PrivateKey}
+	a.cert = tls.Certificate{Certificate: chain, Leaf: leaf, PrivateKey: a.cert.PrivateKey}
 	a.resetConnections() // 新しい証明書で接続し直す
 }
 
